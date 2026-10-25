@@ -36,9 +36,12 @@ public class HollowRL : BaseUnityPlugin
     private int knightHealth;
     private int mana;
 
-    private bool wasHitting;
-    private bool wasDamaged;
     private bool wasInvulnerable;
+    private bool bossHealthTracked;
+    private int trackedBossId;
+    private int trackedBossHealth;
+    private bool knightHealthTracked;
+    private int trackedKnightHealth;
 
     private bool isDashing;
     private bool isJumping;
@@ -133,9 +136,9 @@ public class HollowRL : BaseUnityPlugin
                 isTouchingWallLeft = false;
                 isTouchingWallRight = false;
                 canShadeCloakNow = false;
-                wasHitting = false;
-                wasDamaged = false;
                 wasInvulnerable = false;
+                bossHealthTracked = false;
+                knightHealthTracked = false;
             }
             return;
         }
@@ -164,28 +167,27 @@ public class HollowRL : BaseUnityPlugin
         bool touchingWallRight = knightPos.IsTouchingWallRight();
         bool shadeCloakAvailable = knightPos.CanShadeCloakNow();
 
-        bool isHitting = false;
-        if (isAttacking && atkBox.HasValue)
+        int newHits = 0;
+        if (boss != null)
         {
-            foreach (Bounds hazard in boxes)
-            {
-                if (Overlaps2D(atkBox.Value, hazard))
-                {
-                    isHitting = true;
-                    break;
-                }
-            }
+            int bossId = boss.GetInstanceID();
+            if (bossHealthTracked && trackedBossId == bossId && health < trackedBossHealth)
+                newHits = 1;
+
+            bossHealthTracked = true;
+            trackedBossId = bossId;
+            trackedBossHealth = health;
+        }
+        else
+        {
+            bossHealthTracked = false;
         }
 
-        bool isDamaged = false;
-        foreach (Bounds hazard in boxes)
-        {
-            if (Overlaps2D(box, hazard))
-            {
-                isDamaged = true;
-                break;
-            }
-        }
+        int newDamage = 0;
+        if (knightHealthTracked && kHealth < trackedKnightHealth)
+            newDamage = trackedKnightHealth - kHealth;
+        knightHealthTracked = true;
+        trackedKnightHealth = kHealth;
 
         lock (posLock)
         {
@@ -210,13 +212,8 @@ public class HollowRL : BaseUnityPlugin
             isTouchingWallRight = touchingWallRight;
             canShadeCloakNow = shadeCloakAvailable;
 
-            if (isHitting && !wasHitting)
-                hitCount++;
-            if (isDamaged && !wasDamaged && !wasInvulnerable)
-                damageCount++;
-
-            wasHitting = isHitting;
-            wasDamaged = isDamaged;
+            hitCount += newHits;
+            damageCount += newDamage;
             wasInvulnerable = invulnerable;
         }
     }

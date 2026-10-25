@@ -7,6 +7,13 @@ namespace KnightPos
 {
     public class DiagnosticsOverlay : MonoBehaviour
     {
+        private const string PureVesselObjectName = "HK Prime";
+        private const string PureVesselSceneName = "GG_Hollow_Knight";
+        private const float BossSearchInterval = 0.25f;
+
+        private HealthManager cachedBoss;
+        private float nextBossSearchAt;
+
         public Bounds GetKnightBox()
         {
             return HeroController.instance.GetComponent<Collider2D>().bounds;
@@ -95,7 +102,36 @@ namespace KnightPos
 
         public HealthManager GetBoss()
         {
-            return FindObjectOfType<HealthManager>();
+            // Live diagnostics confirmed Pure Vessel is the object named
+            // "HK Prime" in scene "GG_Hollow_Knight". Keep the reference
+            // while it is alive, then reacquire after a death/retry creates a
+            // new Unity instance. Outside the arena, limit scene-wide scans.
+            if (IsPureVessel(cachedBoss))
+                return cachedBoss;
+
+            cachedBoss = null;
+            if (Time.unscaledTime < nextBossSearchAt)
+                return null;
+
+            nextBossSearchAt = Time.unscaledTime + BossSearchInterval;
+            foreach (HealthManager candidate in FindObjectsOfType<HealthManager>())
+            {
+                if (IsPureVessel(candidate))
+                {
+                    cachedBoss = candidate;
+                    break;
+                }
+            }
+
+            return cachedBoss;
+        }
+
+        private static bool IsPureVessel(HealthManager candidate)
+        {
+            return candidate != null
+                && candidate.gameObject.activeInHierarchy
+                && candidate.gameObject.name == PureVesselObjectName
+                && candidate.gameObject.scene.name == PureVesselSceneName;
         }
 
         // These three used to each call GetBoss() independently, so a single
