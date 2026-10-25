@@ -1,0 +1,18 @@
+# C# / Unity
+.vs/
+bin/
+obj/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Training artifacts. ppo_checkpoint.pth is tracked deliberately so a fresh
+# clone can run a trained agent; everything else here is regenerated per run.
+*.npz
+runs_archive/
+
+# Local tooling
+.claude/settings.local.json

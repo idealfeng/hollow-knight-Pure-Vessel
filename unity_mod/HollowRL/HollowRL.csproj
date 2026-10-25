@@ -1,0 +1,91 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Converted from the old MSBuild-on-Windows format. The previous file
+       required Visual Studio's .NET Framework targeting packs and hardcoded
+       C:\Program Files (x86)\Steam\... in ten HintPaths, so it could not be
+       built anywhere but the machine it was written on. SDK-style plus the
+       reference-assemblies package targets net472 fine with the Linux
+       dotnet SDK. -->
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>HollowRL</AssemblyName>
+    <RootNamespace>HollowRL</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <!-- Properties/AssemblyInfo.cs already declares these; without this the
+         SDK generates a second set and every attribute is a duplicate. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- Where Hollow Knight is installed. Override if yours differs:
+         dotnet build -p:HKDir="/path/to/Hollow Knight"
+       Under Proton the game files live in a normal Linux directory, and the
+       managed assemblies are plain .NET - they build fine with the Linux SDK
+       even though the game itself runs through Wine. -->
+  <PropertyGroup>
+    <!-- Resolve the normal Windows Steam library automatically. HKDir can
+         still be supplied on the command line for a secondary Steam library. -->
+    <SteamInstallPath Condition="'$(OS)' == 'Windows_NT'">$([MSBuild]::GetRegistryValue('HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam', 'InstallPath', ''))</SteamInstallPath>
+    <HKDir Condition="'$(HKDir)' == '' and '$(OS)' == 'Windows_NT' and '$(SteamInstallPath)' != ''">$(SteamInstallPath)\steamapps\common\Hollow Knight</HKDir>
+    <HKDir Condition="'$(HKDir)' == ''">$(HOME)/.local/share/Steam/steamapps/common/Hollow Knight</HKDir>
+    <HKManaged>$(HKDir)/hollow_knight_Data/Managed</HKManaged>
+    <HKCore>$(HKDir)/BepInEx/core</HKCore>
+  </PropertyGroup>
+
+  <Target Name="CheckHKDir" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(HKManaged)')"
+           Text="Hollow Knight's managed assemblies were not found at '$(HKManaged)'. Install the game, run it once so BepInEx unpacks, then build with -p:HKDir=&quot;/your/path/Hollow Knight&quot;." />
+  </Target>
+
+  <ItemGroup>
+    <!-- Lets net472 be targeted without Visual Studio's targeting packs. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>$(HKCore)/0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx">
+      <HintPath>$(HKCore)/BepInEx.dll</HintPath>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(HKManaged)/Assembly-CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass">
+      <HintPath>$(HKManaged)/Assembly-CSharp-firstpass.dll</HintPath>
+    </Reference>
+    <!-- InControl (HeroActions, PlayerAction - what InputInjector patches) is
+         compiled INTO Assembly-CSharp in this build; there is no InControl.dll
+         in Managed/, so it needs no reference of its own. -->
+    <Reference Include="PlayMaker">
+      <HintPath>$(HKManaged)/PlayMaker.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(HKManaged)/UnityEngine.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(HKManaged)/UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(HKManaged)/UnityEngine.InputLegacyModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.Physics2DModule">
+      <HintPath>$(HKManaged)/UnityEngine.Physics2DModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(HKManaged)/UnityEngine.UI.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- The references are all game files, not ours to copy around - and it was
+       copying 60 UnityEngine DLLs into bin/ that made the old output
+       directory look like a second game install. -->
+  <ItemGroup>
+    <Reference Update="@(Reference)">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
