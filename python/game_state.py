@@ -246,34 +246,42 @@ def _poll():
 
     while True:
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Without a timeout, recv() blocks forever against a listener that
-            # accepts but never replies - which is exactly what a stale mod
-            # does. The symptom is "could not read game state" with a socket
-            # that connected fine. Time out and reconnect instead of hanging.
-            sock.settimeout(SOCKET_TIMEOUT)
-            sock.connect((HOST, PORT))
-            connected = True
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                # Without a timeout, readline() blocks forever against a
+                # listener that accepts but never replies. Time out and
+                # reconnect instead of hanging on a stale mod instance.
+                sock.settimeout(SOCKET_TIMEOUT)
+                sock.connect((HOST, PORT))
+                connected = True
 
-            while True:
-                sock.sendall(b"pos\n")
-                response = sock.recv(4096).decode().strip()
-                if not response:
-                    break
+                # TCP is a byte stream, not a message protocol. One recv()
+                # may contain half a state line or several state lines. The
+                # old recv(4096) implementation therefore intermittently fed
+                # fragments such as "9.61\r\n48.16" into _parse_frame(). A
+                # buffered file preserves surplus bytes and returns exactly
+                # one newline-terminated reply for each `pos` request.
+                with sock.makefile("rb") as reader:
+                    while True:
+                        sock.sendall(b"pos\n")
+                        payload = reader.readline()
+                        if not payload:
+                            break
 
-                try:
-                    frame = _parse_frame(response)
-                except (ValueError, IndexError, KeyError) as exc:
-                    # Malformed or version-mismatched frame (e.g. an old mod
-                    # build with a different field count) - skip it instead of
-                    # killing the whole polling thread over one bad line.
-                    print(f"game_state: skipping malformed frame ({exc})")
-                    continue
+                        try:
+                            response = payload.decode("utf-8").rstrip("\r\n")
+                            frame = _parse_frame(response)
+                        except (UnicodeError, ValueError, IndexError, KeyError) as exc:
+                            # A genuinely malformed or version-mismatched line
+                            # should not kill the polling thread. Framing errors
+                            # are prevented above; this guard remains for bad
+                            # fields or an incompatible mod build.
+                            print(f"game_state: skipping malformed frame ({exc})")
+                            continue
 
-                _update_hit_streak(frame)
-                _publish(frame)
+                        _update_hit_streak(frame)
+                        _publish(frame)
 
-                time.sleep(POLL_INTERVAL)
+                        time.sleep(POLL_INTERVAL)
 
         except (ConnectionError, OSError):
             _on_disconnect()

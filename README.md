@@ -205,9 +205,10 @@ correct working directory so checkpoints stay under `python/`):
 
 This opens the training monitor and starts collecting rollouts. Training resumes
 automatically from `ppo_checkpoint.pth` if one exists; the monitor's header shows
-whether the run is fresh or resumed and from which update. A trained checkpoint
-is committed to the repo, so a fresh clone picks up where the last run left off —
-delete or move it to start from scratch.
+whether the run is fresh or resumed and from which update. Checkpoints are local
+experiment artifacts and are intentionally ignored by Git, so a fresh clone starts
+from scratch. Move a checkpoint into `python/` only when you deliberately want to
+resume that exact environment and model architecture.
 
 Two read-only tools can run alongside it, or on their own while you play the
 fight yourself:
