@@ -25,7 +25,7 @@ public class HollowRL : BaseUnityPlugin
     private Bounds knightBox;
     private bool attacking;
     private Bounds? attackBox;
-    private List<Bounds> hazardBoxes = new List<Bounds>();
+    private List<KnightPos.HazardSnapshot> hazards = new List<KnightPos.HazardSnapshot>();
     private int hitCount;
     private int damageCount;
     private Vector2 knightVelocity;
@@ -33,6 +33,9 @@ public class HollowRL : BaseUnityPlugin
     private int bossHealth;
     private int bossFacing;
     private Vector2 bossVelocity;
+    private Vector2 bossPosition;
+    private Bounds? bossBox;
+    private string bossControlState = "";
     private int knightHealth;
     private int mana;
 
@@ -42,18 +45,38 @@ public class HollowRL : BaseUnityPlugin
     private int trackedBossHealth;
     private bool knightHealthTracked;
     private int trackedKnightHealth;
+    // Boss hp reached <=0 at least once since the last reset. Persists while
+    // the boss object is gone (death anim / scene teardown) so a "defeated"
+    // state is not reported as "missing" and vice versa.
+    private bool bossDefeated = false;
+    private bool fightActive;
+    private bool knightDiedThisFight;
+    private int fightBossId = int.MinValue;
 
     private bool isDashing;
     private bool isJumping;
     private bool isFalling;
+    private bool isOnGround;
     private bool isRecoiling;
     private bool isTouchingWallLeft;
     private bool isTouchingWallRight;
+    private float wallDistanceLeft = 100f;
+    private float wallDistanceRight = 100f;
     private bool canShadeCloakNow;
     private float gameSpeed = 1f;
     private bool trainingPaused;
     private volatile bool serverRunning = true;
     private bool inputReady;
+
+    // A short-lived, automatic diagnostic recording is opened only while the
+    // exact Pure Vessel object is present. It captures the information needed
+    // to map FSM/animation states and hazard objects to attacks without
+    // bloating BepInEx's normal log or recording unrelated gameplay.
+    private const float DiagnosticInterval = 0.05f;
+    private float nextDiagnosticAt;
+    private StreamWriter diagnosticWriter;
+    private int diagnosticBossId = int.MinValue;
+    private Component[] diagnosticComponents = new Component[0];
 
     private void Awake()
     {
@@ -117,54 +140,131 @@ public class HollowRL : BaseUnityPlugin
         // snapshot instead; Python treats it as an unavailable observation.
         if (HeroController.instance == null || PlayerData.instance == null)
         {
+            bool victoryDetectedWithoutHero = false;
+            if (fightActive)
+            {
+                if (trackedKnightHealth <= 0)
+                {
+                    knightDiedThisFight = true;
+                    bossDefeated = false;
+                }
+                else
+                {
+                    // Some victory transitions remove both scene objects in
+                    // one frame. The last main-thread snapshot still tells us
+                    // the knight was alive when the active fight vanished.
+                    bossDefeated = true;
+                    victoryDetectedWithoutHero = true;
+                }
+                fightActive = false;
+            }
             lock (posLock)
             {
                 knightPresent = false;
                 attacking = false;
                 attackBox = null;
-                hazardBoxes = new List<Bounds>();
-                bossHealth = 0;
+                hazards = new List<KnightPos.HazardSnapshot>();
+                bossHealth = bossDefeated ? 0 : -1;
                 bossFacing = -1;
                 bossVelocity = Vector2.zero;
+                bossPosition = Vector2.zero;
+                bossBox = null;
+                bossControlState = "";
                 knightVelocity = Vector2.zero;
                 knightHealth = 0;
                 mana = 0;
                 isDashing = false;
                 isJumping = false;
                 isFalling = false;
+                isOnGround = false;
                 isRecoiling = false;
                 isTouchingWallLeft = false;
                 isTouchingWallRight = false;
+                wallDistanceLeft = 100f;
+                wallDistanceRight = 100f;
                 canShadeCloakNow = false;
                 wasInvulnerable = false;
                 bossHealthTracked = false;
                 knightHealthTracked = false;
+                if (victoryDetectedWithoutHero)
+                    hitCount++;
             }
+            CloseDiagnosticRecording();
             return;
         }
 
         Bounds box = knightPos.GetKnightBox();
         bool isAttacking = knightPos.IsAttacking();
         Bounds? atkBox = knightPos.GetAttackBox();
-        List<Bounds> boxes = knightPos.GetHazardBoxes();
         bool invulnerable = knightPos.IsInvulnerable();
         Vector2 velocity = knightPos.GetKnightVelocity();
         bool facingRight = knightPos.IsKnightFacingRight();
         // One scene lookup instead of three - see the comment on
         // GetBossHealth() in KnightPos.cs.
         HealthManager boss = knightPos.GetBoss();
-        int health = knightPos.GetBossHealth(boss);
+        int? bossHp = knightPos.GetBossHealth(boss);
         bool? bossFacingRight = knightPos.IsBossFacingRight(boss);
         Vector2 bVelocity = knightPos.GetBossVelocity(boss);
+        Vector2 bPosition = knightPos.GetBossPosition(boss);
+        Bounds? bBox = knightPos.GetBossBox(boss);
+        List<KnightPos.HazardSnapshot> currentHazards = knightPos.GetHazards(boss);
+        string controlState = ReadControlFsmState(boss);
         int kHealth = knightPos.GetKnightHealth();
         int manaAmount = knightPos.GetMana();
+
+        int health;
+        bool victoryDetectedThisFrame = false;
+        if (bossHp.HasValue)
+        {
+            health = bossHp.Value;
+            int bossId = boss.GetInstanceID();
+            if (health > 0)
+            {
+                if (!fightActive || fightBossId != bossId)
+                {
+                    fightActive = true;
+                    fightBossId = bossId;
+                    knightDiedThisFight = false;
+                    bossDefeated = false;
+                }
+                if (kHealth <= 0)
+                    knightDiedThisFight = true;
+            }
+            else
+            {
+                bossDefeated = true;
+                fightActive = false;
+            }
+        }
+        else
+        {
+            // Pure Vessel disables/destroys its HealthManager immediately on
+            // the killing blow, so the last readable value can be 16 rather
+            // than 0. If a live fight loses its boss while the knight is still
+            // alive, that is a confirmed victory. A knight death is observed
+            // on the main Unity thread first and must never take this branch.
+            if (fightActive)
+            {
+                if (kHealth <= 0)
+                    knightDiedThisFight = true;
+                if (!knightDiedThisFight && kHealth > 0)
+                {
+                    bossDefeated = true;
+                    victoryDetectedThisFrame = true;
+                }
+                fightActive = false;
+            }
+            health = bossDefeated ? 0 : -1;
+        }
 
         bool dashing = knightPos.IsDashing();
         bool jumping = knightPos.IsJumping();
         bool falling = knightPos.IsFalling();
+        bool onGround = knightPos.IsOnGround();
         bool recoiling = knightPos.IsRecoiling();
         bool touchingWallLeft = knightPos.IsTouchingWallLeft();
         bool touchingWallRight = knightPos.IsTouchingWallRight();
+        Vector2 wallDistances = knightPos.GetWallDistances();
         bool shadeCloakAvailable = knightPos.CanShadeCloakNow();
 
         int newHits = 0;
@@ -180,6 +280,8 @@ public class HollowRL : BaseUnityPlugin
         }
         else
         {
+            if (victoryDetectedThisFrame && bossHealthTracked)
+                newHits = 1;
             bossHealthTracked = false;
         }
 
@@ -195,27 +297,257 @@ public class HollowRL : BaseUnityPlugin
             knightBox = box;
             attacking = isAttacking;
             attackBox = atkBox;
-            hazardBoxes = boxes;
+            hazards = currentHazards;
             knightVelocity = velocity;
             knightFacingRight = facingRight;
             bossHealth = health;
             bossFacing = bossFacingRight.HasValue ? (bossFacingRight.Value ? 1 : 0) : -1;
             bossVelocity = bVelocity;
+            bossPosition = bPosition;
+            bossBox = bBox;
+            bossControlState = controlState;
             knightHealth = kHealth;
             mana = manaAmount;
 
             isDashing = dashing;
             isJumping = jumping;
             isFalling = falling;
+            isOnGround = onGround;
             isRecoiling = recoiling;
             isTouchingWallLeft = touchingWallLeft;
             isTouchingWallRight = touchingWallRight;
+            wallDistanceLeft = wallDistances.x;
+            wallDistanceRight = wallDistances.y;
             canShadeCloakNow = shadeCloakAvailable;
 
             hitCount += newHits;
             damageCount += newDamage;
             wasInvulnerable = invulnerable;
         }
+
+        UpdateDiagnosticRecording(
+            boss, box, velocity, kHealth, onGround,
+            health, bPosition, bVelocity, currentHazards);
+    }
+
+
+    private void UpdateDiagnosticRecording(
+        HealthManager boss,
+        Bounds currentKnightBox,
+        Vector2 currentKnightVelocity,
+        int currentKnightHealth,
+        bool currentOnGround,
+        int currentBossHealth,
+        Vector2 currentBossPosition,
+        Vector2 currentBossVelocity,
+        List<KnightPos.HazardSnapshot> currentHazards)
+    {
+        if (boss == null)
+        {
+            CloseDiagnosticRecording();
+            return;
+        }
+
+        int bossId = boss.GetInstanceID();
+        if (diagnosticWriter == null || diagnosticBossId != bossId)
+        {
+            CloseDiagnosticRecording();
+            try
+            {
+                string directory = Path.Combine(Paths.BepInExRootPath, "HollowRL_Diagnostics");
+                Directory.CreateDirectory(directory);
+                string filename = "pure_vessel_"
+                    + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff")
+                    + "_" + bossId + ".tsv";
+                string path = Path.Combine(directory, filename);
+                diagnosticWriter = new StreamWriter(path, false, new UTF8Encoding(false));
+                diagnosticWriter.AutoFlush = true;
+                diagnosticWriter.WriteLine(
+                    "game_time\treal_time\tboss_id\tboss_hp\tboss_x\tboss_y"
+                    + "\tboss_vx\tboss_vy\tknight_x\tknight_y\tknight_vx\tknight_vy"
+                    + "\tknight_hp\ton_ground\tfsms\tanimations\thazard_count\thazards");
+                diagnosticBossId = bossId;
+                diagnosticComponents = boss.GetComponentsInChildren<Component>(true);
+                nextDiagnosticAt = 0f;
+                Logger.LogInfo("HollowRL: Pure Vessel diagnostics -> " + path);
+            }
+            catch (Exception exc)
+            {
+                Logger.LogWarning("HollowRL: cannot open diagnostics file - " + exc.Message);
+                diagnosticWriter = null;
+                diagnosticBossId = bossId;
+                return;
+            }
+        }
+
+        if (diagnosticWriter == null || Time.unscaledTime < nextDiagnosticAt)
+            return;
+        nextDiagnosticAt = Time.unscaledTime + DiagnosticInterval;
+
+        try
+        {
+            Vector2 knightCenter = currentKnightBox.center;
+            var line = new StringBuilder();
+            line.Append(FormatFloat(Time.time)).Append('\t')
+                .Append(FormatFloat(Time.unscaledTime)).Append('\t')
+                .Append(bossId).Append('\t')
+                .Append(currentBossHealth).Append('\t')
+                .Append(FormatFloat(currentBossPosition.x)).Append('\t')
+                .Append(FormatFloat(currentBossPosition.y)).Append('\t')
+                .Append(FormatFloat(currentBossVelocity.x)).Append('\t')
+                .Append(FormatFloat(currentBossVelocity.y)).Append('\t')
+                .Append(FormatFloat(knightCenter.x)).Append('\t')
+                .Append(FormatFloat(knightCenter.y)).Append('\t')
+                .Append(FormatFloat(currentKnightVelocity.x)).Append('\t')
+                .Append(FormatFloat(currentKnightVelocity.y)).Append('\t')
+                .Append(currentKnightHealth).Append('\t')
+                .Append(currentOnGround ? 1 : 0).Append('\t')
+                .Append(ReadFsmStates()).Append('\t')
+                .Append(ReadAnimationNames()).Append('\t')
+                .Append(currentHazards.Count).Append('\t')
+                .Append(FormatHazards(currentHazards));
+            diagnosticWriter.WriteLine(line.ToString());
+        }
+        catch (Exception exc)
+        {
+            Logger.LogWarning("HollowRL: diagnostic write failed - " + exc.Message);
+            CloseDiagnosticRecording();
+        }
+    }
+
+
+    private string ReadControlFsmState(HealthManager boss)
+    {
+        if (boss == null)
+            return "";
+
+        Component[] components = boss.GetComponentsInChildren<Component>(true);
+        foreach (Component component in components)
+        {
+            if (component == null || component.GetType().Name != "PlayMakerFSM")
+                continue;
+
+            object fsmName = GetMemberValue(component, "FsmName");
+            if ((fsmName as string) != "Control")
+                continue;
+
+            object activeState = GetMemberValue(component, "ActiveStateName");
+            if (activeState == null)
+            {
+                object fsm = GetMemberValue(component, "Fsm");
+                activeState = GetMemberValue(fsm, "ActiveStateName");
+            }
+            return Sanitize(activeState);
+        }
+        return "";
+    }
+
+    private string ReadFsmStates()
+    {
+        var states = new List<string>();
+        foreach (Component component in diagnosticComponents)
+        {
+            if (component == null || component.GetType().Name != "PlayMakerFSM")
+                continue;
+
+            object fsmName = GetMemberValue(component, "FsmName");
+            object activeState = GetMemberValue(component, "ActiveStateName");
+            if (activeState == null)
+            {
+                object fsm = GetMemberValue(component, "Fsm");
+                activeState = GetMemberValue(fsm, "ActiveStateName");
+            }
+            states.Add(Sanitize(fsmName) + ":" + Sanitize(activeState));
+        }
+        return string.Join("|", states.ToArray());
+    }
+
+
+    private string ReadAnimationNames()
+    {
+        var animations = new List<string>();
+        foreach (Component component in diagnosticComponents)
+        {
+            if (component == null || component.GetType().Name != "tk2dSpriteAnimator")
+                continue;
+
+            object clip = GetMemberValue(component, "CurrentClip");
+            object clipName = GetMemberValue(clip, "name") ?? GetMemberValue(clip, "Name");
+            animations.Add(Sanitize(clipName));
+        }
+        return string.Join("|", animations.ToArray());
+    }
+
+
+    private static object GetMemberValue(object target, string name)
+    {
+        if (target == null)
+            return null;
+
+        Type type = target.GetType();
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic;
+
+        System.Reflection.PropertyInfo property = type.GetProperty(name, flags);
+        if (property != null && property.GetIndexParameters().Length == 0)
+            return property.GetValue(target, null);
+
+        System.Reflection.FieldInfo field = type.GetField(name, flags);
+        return field != null ? field.GetValue(target) : null;
+    }
+
+
+    private static string FormatHazards(List<KnightPos.HazardSnapshot> currentHazards)
+    {
+        var entries = new List<string>();
+        foreach (KnightPos.HazardSnapshot hazard in currentHazards)
+        {
+            Bounds box = hazard.Box;
+            entries.Add(
+                hazard.InstanceId + "~"
+                + Sanitize(hazard.ObjectName) + "~"
+                + Sanitize(hazard.RootName) + "~"
+                + Sanitize(hazard.HierarchyPath) + "~"
+                + (hazard.BossAttached ? "1" : "0") + "~"
+                + FormatFloat(box.min.x) + "~" + FormatFloat(box.min.y) + "~"
+                + FormatFloat(box.max.x) + "~" + FormatFloat(box.max.y) + "~"
+                + FormatFloat(hazard.Velocity.x) + "~" + FormatFloat(hazard.Velocity.y));
+        }
+        return string.Join("||", entries.ToArray());
+    }
+
+
+    private static string FormatFloat(float value)
+    {
+        return value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+
+    private static string Sanitize(object value)
+    {
+        if (value == null)
+            return "";
+        return value.ToString()
+            .Replace("\t", " ")
+            .Replace("\r", " ")
+            .Replace("\n", " ")
+            .Replace("~", "-")
+            .Replace("|", "/");
+    }
+
+
+    private void CloseDiagnosticRecording()
+    {
+        if (diagnosticWriter != null)
+        {
+            diagnosticWriter.Dispose();
+            diagnosticWriter = null;
+            Logger.LogInfo("HollowRL: Pure Vessel diagnostic recording closed");
+        }
+        diagnosticBossId = int.MinValue;
+        diagnosticComponents = new Component[0];
     }
 
 
@@ -378,7 +710,7 @@ public class HollowRL : BaseUnityPlugin
         public Bounds Knight;
         public bool Attacking;
         public Bounds? AttackBox;
-        public List<Bounds> HazardBoxes;
+        public List<KnightPos.HazardSnapshot> Hazards;
         public int Hits;
         public int Damages;
         public Vector2 KnightVelocity;
@@ -386,15 +718,21 @@ public class HollowRL : BaseUnityPlugin
         public int BossHealth;
         public int BossFacing;
         public Vector2 BossVelocity;
+        public Vector2 BossPosition;
+        public Bounds? BossBox;
+        public string ControlFsmState;
         public int KnightHealth;
         public int Mana;
         public float GameSpeed;
         public bool Dashing;
         public bool Jumping;
         public bool Falling;
+        public bool OnGround;
         public bool Recoiling;
         public bool TouchingWallLeft;
         public bool TouchingWallRight;
+        public float WallDistanceLeft;
+        public float WallDistanceRight;
         public bool ShadeCloakAvailable;
         public bool Invulnerable;
         public bool Paused;
@@ -411,7 +749,7 @@ public class HollowRL : BaseUnityPlugin
                 Knight = knightBox,
                 Attacking = attacking,
                 AttackBox = attackBox,
-                HazardBoxes = hazardBoxes,
+                Hazards = hazards,
                 Hits = hitCount,
                 Damages = damageCount,
                 KnightVelocity = knightVelocity,
@@ -419,15 +757,21 @@ public class HollowRL : BaseUnityPlugin
                 BossHealth = bossHealth,
                 BossFacing = bossFacing,
                 BossVelocity = bossVelocity,
+                BossPosition = bossPosition,
+                BossBox = bossBox,
+                ControlFsmState = bossControlState,
                 KnightHealth = knightHealth,
                 Mana = mana,
                 GameSpeed = gameSpeed,
                 Dashing = isDashing,
                 Jumping = isJumping,
                 Falling = isFalling,
+                OnGround = isOnGround,
                 Recoiling = isRecoiling,
                 TouchingWallLeft = isTouchingWallLeft,
                 TouchingWallRight = isTouchingWallRight,
+                WallDistanceLeft = wallDistanceLeft,
+                WallDistanceRight = wallDistanceRight,
                 ShadeCloakAvailable = canShadeCloakNow,
                 Invulnerable = wasInvulnerable,
                 Paused = trainingPaused,
@@ -456,10 +800,13 @@ public class HollowRL : BaseUnityPlugin
     ///   2:  attack box       as section 0, or empty when not swinging
     ///   3:  counters         hits,damages  (lifetime, never reset)
     ///   4:  scalars          vel_x,vel_y,facing_right,boss_health,boss_facing,
-    ///                        boss_vel_x,boss_vel_y,knight_health,mana,speed
+    ///                        boss_vel_x,boss_vel_y,knight_health,mana,speed,
+    ///                        boss_x,boss_y,wall_distance_left,wall_distance_right
     ///   5:  flags            dashing,jumping,falling,recoiling,wall_left,
-    ///                        wall_right,shade_cloak,invuln,paused
-    ///   6+: one hazard box each, as section 0
+    ///                        wall_right,shade_cloak,invuln,paused,on_ground
+    ///   6:  control fsm      PlayMaker "Control" FSM ActiveStateName, or empty
+    ///   7:  boss box         min_x,min_y,max_x,max_y, or empty
+    ///   8+: one hazard       id,min_x,min_y,max_x,max_y,vel_x,vel_y,boss_attached
     /// </summary>
     private string BuildStateLine()
     {
@@ -486,7 +833,11 @@ public class HollowRL : BaseUnityPlugin
           .Append(s.BossVelocity.y).Append(',')
           .Append(s.KnightHealth).Append(',')
           .Append(s.Mana).Append(',')
-          .Append(s.GameSpeed);
+          .Append(s.GameSpeed).Append(',')
+          .Append(s.BossPosition.x).Append(',')
+          .Append(s.BossPosition.y).Append(',')
+          .Append(s.WallDistanceLeft).Append(',')
+          .Append(s.WallDistanceRight);
 
         sb.Append(';')
           .Append(s.Dashing ? 1 : 0).Append(',')
@@ -497,12 +848,25 @@ public class HollowRL : BaseUnityPlugin
           .Append(s.TouchingWallRight ? 1 : 0).Append(',')
           .Append(s.ShadeCloakAvailable ? 1 : 0).Append(',')
           .Append(s.Invulnerable ? 1 : 0).Append(',')
-          .Append(s.Paused ? 1 : 0);
+          .Append(s.Paused ? 1 : 0).Append(',')
+          .Append(s.OnGround ? 1 : 0);
 
-        foreach (Bounds box in s.HazardBoxes)
+        sb.Append(';').Append(s.ControlFsmState);
+        sb.Append(';');
+        if (s.BossBox.HasValue)
+            AppendBox(sb, s.BossBox.Value);
+
+        foreach (KnightPos.HazardSnapshot hazard in s.Hazards)
         {
-            sb.Append(';');
-            AppendBox(sb, box);
+            Bounds box = hazard.Box;
+            sb.Append(';').Append(hazard.InstanceId).Append(',')
+              .Append(box.min.x).Append(',')
+              .Append(box.min.y).Append(',')
+              .Append(box.max.x).Append(',')
+              .Append(box.max.y).Append(',')
+              .Append(hazard.Velocity.x).Append(',')
+              .Append(hazard.Velocity.y).Append(',')
+              .Append(hazard.BossAttached ? 1 : 0);
         }
 
         return sb.ToString();
@@ -512,15 +876,11 @@ public class HollowRL : BaseUnityPlugin
     private void OnDestroy()
     {
         serverRunning = false;
+        CloseDiagnosticRecording();
 
         if (server != null)
             server.Stop();
     }
 
 
-    private static bool Overlaps2D(Bounds a, Bounds b)
-    {
-        return a.min.x <= b.max.x && a.max.x >= b.min.x &&
-               a.min.y <= b.max.y && a.max.y >= b.min.y;
-    }
 }

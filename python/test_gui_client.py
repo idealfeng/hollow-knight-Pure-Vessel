@@ -33,9 +33,9 @@ import controls
 import game_state
 from enviroment import (
     is_done, get_state, state_to_vector, nearest_hazard_distance,
-    relative_horizontal_position, on_ground, HazardSide,
+    relative_horizontal_position, on_ground, HazardSide, OBSERVATION_SIZE,
 )
-from agent import calculate_reward, boss_attack
+from agent import calculate_reward, boss_attack, boss_move
 from agent.action import (
     BossAttack,
     movement_actions, look_actions, attack_actions,
@@ -48,14 +48,15 @@ CANVAS_SIZE = 480
 SCALE = 25  # pixels per game unit
 HISTORY_LEN = 300
 LOG_MAX_LINES = 400
+GUI_STEP_DT = 0.03
 
-STATE_SIZE = 44
+STATE_SIZE = OBSERVATION_SIZE
 
-# Same cap as main.py's training loop - forces a knight death (Y hotkey, see
-# connection.cs) after this many seconds of a live fight, so the dashboard
-# mirrors the same episode boundaries you'd see during real training instead
-# of letting a manually-played or idle fight run indefinitely.
-EPISODE_TIME_LIMIT = 60.0
+# Longer than main.py's 60 s training cap: this is a manual-observation tool,
+# so a 2-minute cap gives room to watch boss states without the 60 s KILL
+# cutting a fight short. Still forces a death (Y hotkey) rather than running
+# forever.
+EPISODE_TIME_LIMIT = 120.0
 
 # Same five independent action heads as main.py - keep these two files in sync.
 GROUP_LABELS = ["move", "look", "attack", "dash", "jump"]
@@ -84,11 +85,7 @@ CHECKPOINT_PATH = os.path.join(SCRIPT_DIR, "ppo_checkpoint.pth")
 
 ATTACK_NAMES = {
     BossAttack.NONE: "not attacking",
-    BossAttack.WINDUP: "about to dash",
-    BossAttack.DASH: "dash attack",
-    BossAttack.NEEDLE: "needle attack",
-    BossAttack.SILK: "silk attack",
-    BossAttack.AIR_DASH: "air dash attack",
+    BossAttack.ACTIVE: "active hazard (move not mapped yet)",
 }
 
 RELATIVE_POS_NAMES = {
@@ -102,11 +99,9 @@ RELATIVE_POS_NAMES = {
 # every frame and would just be noise there
 LOGGED_LABELS = {
     "hit landed",
-    "first stagger",
-    "second stagger",
+    "boss staggered",
     "boss defeated",
     "took damage",
-    "hit by non-attack",
     "die",
 }
 
@@ -126,7 +121,8 @@ def _format_flags(state):
         f"{_flag('Dashing', state['is_dashing'])}\n"
         f"{_flag('Jumping', state['is_jumping'])}   {_flag('Falling', state['is_falling'])}   "
         f"{_flag('Recoiling', state['is_recoiling'])}\n"
-        f"Touching wall: {wall_side}\n"
+        f"Touching wall: {wall_side}   "
+        f"distance L/R: {state['wall_distance_left']:.2f}/{state['wall_distance_right']:.2f}\n"
         f"{_flag('Can shade cloak', state['can_shade_cloak_now'])}\n"
         f"{_flag('Invulnerable', state['is_invuln'])}"
     )
@@ -149,6 +145,9 @@ class App:
         self.total_reward = 0.0
         self.session_reward = 0.0
         self.frame_count = 0
+        self.terminal_handled = False
+        self.fight_hit_baseline = game_state.hit_count
+        self.fight_damage_baseline = game_state.damage_count
 
         # None = no live fight to time yet; set the moment a fight is seen,
         # cleared on episode end so the next fight starts its own 60 s clock.
@@ -266,6 +265,9 @@ class App:
         self.total_reward = 0.0
         self.frame_count = 0
         self.previous_state = None
+        self.terminal_handled = is_done()
+        self.fight_hit_baseline = game_state.hit_count
+        self.fight_damage_baseline = game_state.damage_count
         self.reward_history.clear()
         self.total_reward_history.clear()
         self.value_history.clear()
@@ -395,6 +397,14 @@ class App:
         if live_fight and self.episode_start_time is None:
             self.episode_start_time = time.time()
             self.timed_out = False
+            self.terminal_handled = False
+            self.fight_hit_baseline = game_state.hit_count
+            self.fight_damage_baseline = game_state.damage_count
+            self.total_reward = 0.0
+            self.previous_state = None
+            self.reward_history.clear()
+            self.total_reward_history.clear()
+            self.value_history.clear()
         elif not live_fight:
             self.episode_start_time = None
 
@@ -434,13 +444,15 @@ class App:
             draw_box(attack_box, "yellow", width=2)
 
         current_state = get_state()
+        current_state["hit_count"] = game_state.hit_count - self.fight_hit_baseline
+        current_state["damage_count"] = game_state.damage_count - self.fight_damage_baseline
 
         if self.frame_count % 30 == 0:
             print(current_state)
 
         done = is_done()
 
-        if boss_health <= 0:
+        if boss_health == 0:
             done_reason = "boss defeated"
         elif knight_health <= 0:
             done_reason = "knight died"
@@ -449,6 +461,7 @@ class App:
         self.done_label.config(text=f"Done: {done_reason}", fg="red" if done else "black")
 
         attack_type = boss_attack(current_state)
+        move_type = boss_move(current_state)
         distance_text = f"{nearest_hazard_distance(knight_box, hazard_boxes):.2f}" if hazard_boxes else "-"
         relative_pos = relative_horizontal_position(current_state)
         grounded = on_ground(current_state)
@@ -456,9 +469,11 @@ class App:
         self.state_label.config(
             text=(
                 f"Knight health: {knight_health}   Mana: {mana}   Boss health: {boss_health}\n"
-                f"Hits: {game_state.hit_count}   Damage taken: {game_state.damage_count}\n"
+                f"Hits this fight: {current_state['hit_count']}   "
+                f"Damage this fight: {current_state['damage_count']}\n"
                 f"Attacking: {'YES' if attacking else 'no'}\n"
                 f"Boss attack: {ATTACK_NAMES.get(attack_type, attack_type)}\n"
+                f"Boss move: {move_type.name}\n"
                 f"Distance to hazard: {distance_text}\n"
                 f"Hazard relative pos: {RELATIVE_POS_NAMES.get(relative_pos, relative_pos)}\n"
                 f"On ground: {'YES' if grounded else 'no'}\n"
@@ -477,13 +492,17 @@ class App:
             )
             self.model_action_label.config(text=f"Greedy: {greedy_text}")
             self.model_value_label.config(
-                text=f"V(s): {snapshot['value']:+.3f}   Entropy (sum of 6 heads): {snapshot['entropy']:.3f}"
+                text=f"V(s): {snapshot['value']:+.3f}   "
+                f"Entropy (sum of {len(ACTION_GROUPS)} heads): {snapshot['entropy']:.3f}"
             )
 
-        if not self.paused and self.previous_state is not None:
+        if (not self.paused
+                and self.previous_state is not None
+                and not (done and self.terminal_handled)):
             reward, breakdown = calculate_reward(
                 self.previous_state, current_state, done,
                 timed_out=self.timed_out, return_breakdown=True,
+                step_dt=GUI_STEP_DT,
             )
             self.total_reward += reward
             self.session_reward += reward
@@ -519,6 +538,7 @@ class App:
 
             if done:
                 self._log(f"=== episode end: {done_reason} | total reward {self.total_reward:+.2f} ===", "marker")
+                self.terminal_handled = True
 
         if not self.paused:
             self.previous_state = current_state

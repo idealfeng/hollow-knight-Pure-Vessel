@@ -1,7 +1,7 @@
 # HollowRL
 
-A reinforcement learning agent that fights a Hollow Knight boss — Hornet, for
-now — trained with PPO against the live game.
+A reinforcement learning agent that fights a Hollow Knight boss — Pure Vessel —
+trained with PPO against the live game.
 
 There is no emulator, no screen scraping and no fake keystrokes. A BepInEx mod
 loaded inside the game exposes the fight as a structured state feed and accepts
@@ -264,7 +264,7 @@ advantage chain is cut cleanly instead of splicing two unrelated moments togethe
 
 ---
 
-## Observation space — 44 features
+## Observation space — 119 features
 
 Built by `enviroment.state_to_vector()`, normalised by a running mean/variance
 estimator (`obs_norm.py`) that clips to ±10 sigma. All boxes are
@@ -272,23 +272,20 @@ estimator (`obs_norm.py`) that clips to ±10 sigma. All boxes are
 
 | Group | Features |
 |-------|----------|
-| Knight body | `knight_x/y/width/height`, `knight_vel_x/y`, `knight_facing_right` |
-| Knight resources | `knight_health` (masks), `mana` (soul, 0–99) |
-| Knight attack | `attackbox_x/y/width/height`, `attacking` |
-| Hazards | two tracked hazard boxes (8 values), `hazard_vel_x/y` (boss velocity) |
-| Boss | `boss_health`, `boss_facing_direction` |
-| Derived | `attack_type`, `nearest_hazard_distance`, `relative_horizontal_position`, `offset1_x/y`, `offset2_x/y` (knight-relative, clipped to ±50) |
-| Counters | `hit_count`, `damage_count` — per episode, not lifetime |
-| Movement flags | `is_dashing`, `is_jumping`, `is_falling`, `is_recoiling` |
-| Contact / abilities | `is_touching_wall_left/right`, `can_shade_cloak_now`, `is_invuln` |
-| Episode clock | `time_frac` — 0.0 at episode start, 1.0 at the time cap |
+| Knight body | health/mana, facing, velocity, action flags, grounded/wall contact, and left/right wall distance (17) |
+| Nail hitbox | `attack_dx/dy/width/height`, `attack_present` — knight-relative (5) |
+| Boss | `boss_present`, `boss_health`, `boss_dx/dy`, `boss_rel_vel_x/y`, `boss_width/height`, `boss_facing_left`, `boss_faces_knight`, `knight_faces_boss` (11) |
+| Fight progress | `hit_count`, `damage_count`, `time_frac` (3) |
+| Hazard summary | `hazard_count`, `nearest_edge_distance`, 4 directional gaps, `attack_active` (7) |
+| Move one-hot | 12 Pure Vessel moves from the Control FSM state (12) |
+| Hazards | 8 closest hazards, each `dx/dy/width/height/rel_vel_x/rel_vel_y/boss_attached/present` (64) |
 
 `time_frac` matters more than it looks: without it the critic cannot distinguish a
 state at t=5 s from an identical-looking one at t=59 s, even though their true
 returns differ enormously.
 
 `state_vector_viewer.py`'s `FEATURE_NAMES` list must stay in the same order as
-`state_to_vector()`'s return, and `STATE_SIZE = 44` appears in both `main.py` and
+`state_to_vector()`'s return, and `STATE_SIZE = OBSERVATION_SIZE` (119) appears in both `main.py` and
 `test_gui_client.py`. Changing the observation means touching all four places.
 
 ---
@@ -331,24 +328,22 @@ it reaches the buffer.
 
 | Event | Reward |
 |-------|--------|
-| Damage dealt to the boss | +4.0, plus 1.5 per consecutive hit without taking damage, capped at +10.0 |
-| First stagger (boss HP crosses ≤ 537) | +60 |
-| Second stagger (boss HP crosses ≤ 339) | +120 |
+| Damage dealt to the boss | +1.0, plus 0.25 per consecutive clean hit, capped at +2.0 |
+| Boss Control FSM enters a real stun | +10 |
 | Boss defeated | +100 |
-| Dodge — boss attack ends with no health lost | +2 |
-| Per step | −0.02 (≈ −18 over a full 60 s episode) |
-| Damage taken | −0.3 per mask |
-| Damage taken while the boss was *not* attacking | −6 extra |
-| Death | −20 |
+| Time | −0.15 per second |
+| Damage taken | −4 per mask |
+| Death | −40 |
 
 The hit streak is tracked in the polling thread rather than in the reward
 function, because the poll sees every socket frame while the reward function only
 samples at 15 Hz and would miss hit/damage transitions falling between steps.
 
-The stagger thresholds and the attack classifier are tuned to one specific
-Hornet fight; `agent/action.py:attack()` fingerprints the boss's current move by
-the *area* of its hazard collider (2.35 = ground dash attack, 1.61 = needle,
-2.29 = silk). Retargeting to another boss means redoing both.
+The stagger signal and move classifier are read directly from Pure Vessel's
+PlayMaker Control FSM. `agent/action.py:boss_move()` reads its
+`ActiveStateName` and maps it to a 12-class `PureVesselMove` one-hot, so a move is
+recognised during its windup ("* Antic") rather than only once its hazard collider
+appears.
 
 ---
 
@@ -371,7 +366,7 @@ All in `main.py`.
 | `TARGET_KL` | 0.1 | joint budget across five heads |
 | `EPOCHS` / `MINIBATCH_SIZE` | 4 / 128 | 16 gradient steps per update |
 
-The network is a shared 44→128→128 tanh trunk with orthogonal initialisation,
+The network is a shared 119→128→128 tanh trunk with orthogonal initialisation,
 five categorical heads (gain 0.01) and one critic head (gain 1.0).
 
 ### Reading the monitor
@@ -406,9 +401,9 @@ knight_box ; attacking ; attack_box ; hits,damages ; scalars ; flags ; hazard_bo
 | `attacking` | `0` / `1` |
 | `attack_box` | same corner format, **empty** when not attacking |
 | counters | `hits,damages` — lifetime totals for the BepInEx session |
-| scalars | `vel_x,vel_y,facing_right,boss_health,boss_facing,boss_vel_x,boss_vel_y,knight_health,mana,game_speed` |
-| flags | `dashing,jumping,falling,recoiling,wall_left,wall_right,shade_cloak,invuln,paused` |
-| hazards | zero or more further boxes, one per field, in stable first-seen order |
+| scalars | `vel_x,vel_y,facing_right,boss_health,boss_facing,boss_vel_x,boss_vel_y,knight_health,mana,game_speed,boss_x,boss_y,wall_left_distance,wall_right_distance` |
+| flags | `dashing,jumping,falling,recoiling,wall_left,wall_right,shade_cloak,invuln,paused,on_ground` |
+| hazards | zero or more `id,box,velocity,boss_attached` records; Python keeps the nearest eight plus summaries |
 
 `boss_facing` is `1` for right, `0` for left, `-1` when no boss is present.
 Python stores it inverted, as `boss_facing_left`.
@@ -454,10 +449,9 @@ plotted against someone else's history — archive them as a pair.
 
 ## Known rough edges
 
-- **Arena-specific constants.** `on_ground()` compares the knight's `y` against
-  the literal `27.015`, and the attack classifier matches hazard-collider areas to
-  two decimal places. Both are correct only for the one arena and boss they were
-  measured in.
+- **Move classification depends on the Control FSM state.** `boss_move()` keys off
+  Pure Vessel's PlayMaker `Control` FSM `ActiveStateName`; a different boss needs
+  its own state-to-move map (see `agent/action.py:_FSM_TO_MOVE`).
 - **Reset costs ~9 s of fixed sleep per episode**, on top of the menu navigation.
   The surrounding comments describe a state-driven wait that the code does not
   currently do.

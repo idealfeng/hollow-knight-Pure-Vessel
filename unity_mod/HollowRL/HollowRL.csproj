@@ -77,6 +77,9 @@
     <Reference Include="UnityEngine.UI">
       <HintPath>$(HKManaged)/UnityEngine.UI.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(HKManaged)/UnityEngine.IMGUIModule.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <!-- The references are all game files, not ours to copy around - and it was

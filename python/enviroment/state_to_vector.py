@@ -1,76 +1,124 @@
-"""Reading the game: the raw state dict, and the flat observation vector the
-network actually consumes.
-
-get_state() snapshots the globals the game_state polling thread keeps up to
-date. state_to_vector() flattens that snapshot into the fixed-width list of
-numbers the policy sees - its length is STATE_SIZE in main.py, and its field
-order is mirrored by FEATURE_NAMES in state_vector_viewer.py.
-"""
+"""Raw game-state snapshots and Pure Vessel's relative observation vector."""
 
 import game_state as game_reader
-from agent.action import boss_attack
-from agent.calc import box_center, nearest_hazard_distance, relative_offsets
+from agent.action import boss_attack, boss_move, PureVesselMove
+from agent.calc import box_center, box_distance
 
 game_reader.start()
 
 
-# Hazard and attack box slots are zero-filled when the game reports nothing
-# there, so the vector keeps a fixed width whatever is on screen.
-EMPTY_BOX = (0.0, 0.0, 0.0, 0.0)
-
-# How many hazard boxes get their own slots in the observation. The boss can
-# briefly have more; the extras are visible to nearest_hazard_distance() but
-# not to the per-box features.
-TRACKED_HAZARDS = 2
-
-# The arena floor. The knight's box sits at exactly this y while grounded,
-# which is cheaper (and matches the mod's numbers better) than inferring it
-# from the velocity.
-GROUND_Y = 27.015
+TRACKED_HAZARDS = 8
+HAZARD_FEATURES = 8
+BASE_FEATURES = 55
+OBSERVATION_SIZE = BASE_FEATURES + TRACKED_HAZARDS * HAZARD_FEATURES
+MAX_OFFSET = 50.0
+NO_HAZARD_DISTANCE = 50.0
 
 
 class HazardSide:
-    """Which side of the nearest hazard the knight is on. These values go
-    straight into the observation vector, so don't renumber them."""
-
     NONE = -1
     RIGHT = 0
     LEFT = 1
     SAME = 2
 
 
-def attack_box_features(attack_box):
-    """The knight's attack hitbox, or a zero box when it isn't swinging."""
-    return list(attack_box) if attack_box else list(EMPTY_BOX)
+def _clip(value, limit=MAX_OFFSET):
+    return max(-limit, min(limit, value))
 
 
-def hazard_box_features(hazards):
-    """The first TRACKED_HAZARDS hazard boxes flattened into one list,
-    zero-padded so the width is always TRACKED_HAZARDS * 4."""
+def _move_one_hot(move):
+    one_hot = [0] * len(PureVesselMove)
+    one_hot[int(move)] = 1
+    return one_hot
+
+
+def _relative_box_features(reference_box, target_box):
+    """Target centre offset and size, plus a presence bit."""
+    if reference_box is None or target_box is None:
+        return [0.0, 0.0, 0.0, 0.0, 0]
+    rx, ry = box_center(reference_box)
+    tx, ty = box_center(target_box)
+    min_x, min_y, max_x, max_y = target_box
+    return [
+        _clip(tx - rx),
+        _clip(ty - ry),
+        max_x - min_x,
+        max_y - min_y,
+        1,
+    ]
+
+
+def _sorted_hazards(knight_box, hazards):
+    # Edge distance, rather than first-seen order or centre distance, makes
+    # large sword pillars rank by how soon they can actually touch the knight.
+    return sorted(hazards, key=lambda hazard: box_distance(knight_box, hazard.box))
+
+
+def _hazard_features(knight_box, knight_velocity, hazards):
+    kx, ky = box_center(knight_box)
+    kvx, kvy = knight_velocity
     features = []
-    for i in range(TRACKED_HAZARDS):
-        features.extend(hazards[i] if i < len(hazards) else EMPTY_BOX)
+    ordered = _sorted_hazards(knight_box, hazards)
+
+    for index in range(TRACKED_HAZARDS):
+        if index >= len(ordered):
+            features.extend((0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0))
+            continue
+
+        hazard = ordered[index]
+        hx, hy = box_center(hazard.box)
+        min_x, min_y, max_x, max_y = hazard.box
+        hvx, hvy = hazard.velocity
+        features.extend((
+            _clip(hx - kx),
+            _clip(hy - ky),
+            max_x - min_x,
+            max_y - min_y,
+            _clip(hvx - kvx),
+            _clip(hvy - kvy),
+            int(hazard.boss_attached),
+            1,
+        ))
+
     return features
 
 
-def boss_facing_flag(boss_facing_left):
-    """1 when the boss faces left, 0 when it faces right OR when no boss was
-    found at all (game_state uses None for that)."""
-    return int(boss_facing_left is True)
+def _directional_hazard_gaps(knight_box, hazards):
+    """Nearest edge gap on the knight's left, right, above and below."""
+    if not hazards:
+        return [NO_HAZARD_DISTANCE] * 4
+
+    kx, ky = box_center(knight_box)
+    left = right = above = below = NO_HAZARD_DISTANCE
+    kmin_x, kmin_y, kmax_x, kmax_y = knight_box
+
+    for hazard in hazards:
+        hmin_x, hmin_y, hmax_x, hmax_y = hazard.box
+        hx, hy = box_center(hazard.box)
+        if hx <= kx:
+            left = min(left, max(kmin_x - hmax_x, 0.0))
+        if hx >= kx:
+            right = min(right, max(hmin_x - kmax_x, 0.0))
+        if hy >= ky:
+            above = min(above, max(hmin_y - kmax_y, 0.0))
+        if hy <= ky:
+            below = min(below, max(kmin_y - hmax_y, 0.0))
+
+    return [left, right, above, below]
 
 
-def on_ground(state):
-    return state["knight_box"][1] == GROUND_Y
+def nearest_hazard_distance(knight_box, hazard_boxes):
+    if not hazard_boxes:
+        return NO_HAZARD_DISTANCE
+    return min(box_distance(knight_box, hazard_box) for hazard_box in hazard_boxes)
 
 
 def relative_horizontal_position(state):
-    """Which side of the first hazard the knight is on - see HazardSide."""
-    if not state["hazard_boxes"]:
+    if not state["hazards"]:
         return HazardSide.NONE
-
+    nearest = _sorted_hazards(state["knight_box"], state["hazards"])[0]
     knight_x, _ = box_center(state["knight_box"])
-    hazard_x, _ = box_center(state["hazard_boxes"][0])
-
+    hazard_x, _ = box_center(nearest.box)
     if knight_x < hazard_x:
         return HazardSide.LEFT
     if knight_x > hazard_x:
@@ -78,29 +126,36 @@ def relative_horizontal_position(state):
     return HazardSide.SAME
 
 
+def on_ground(state):
+    return state["is_on_ground"]
+
+
 def get_state():
     return {
         "knight_box": game_reader.knight_box,
         "attacking": game_reader.attacking,
         "attack_box": game_reader.attack_box,
-        # Per-episode, not lifetime - the mod's raw counters never reset on
-        # their own (see game_state.reset_episode_counters()).
         "hit_count": game_reader.hit_count - game_reader.hit_count_baseline,
         "damage_count": game_reader.damage_count - game_reader.damage_count_baseline,
-        # Consecutive hits without taking damage. Reward-only - deliberately
-        # NOT added to state_to_vector(), which would change STATE_SIZE.
         "hit_streak": game_reader.hit_streak,
+        "hazards": game_reader.hazards,
         "hazard_boxes": game_reader.hazard_boxes,
         "knight_velocity": game_reader.knight_velocity,
         "knight_facing_right": game_reader.knight_facing_right,
         "boss_health": game_reader.boss_health,
         "boss_facing_left": game_reader.boss_facing_left,
         "boss_velocity": game_reader.boss_velocity,
+        "boss_position": game_reader.boss_position,
+        "boss_box": game_reader.boss_box,
+        "boss_control_state": game_reader.boss_control_state,
+        "wall_distance_left": game_reader.wall_distance_left,
+        "wall_distance_right": game_reader.wall_distance_right,
         "knight_health": game_reader.knight_health,
         "mana": game_reader.mana,
         "is_dashing": game_reader.is_dashing,
         "is_jumping": game_reader.is_jumping,
         "is_falling": game_reader.is_falling,
+        "is_on_ground": game_reader.is_on_ground,
         "is_recoiling": game_reader.is_recoiling,
         "is_touching_wall_left": game_reader.is_touching_wall_left,
         "is_touching_wall_right": game_reader.is_touching_wall_right,
@@ -110,68 +165,84 @@ def get_state():
 
 
 def state_to_vector(state, time_frac=0.0):
-    """Flatten a state dict into the network's input vector, or None if the
-    game has not reported a knight yet.
-
-    `time_frac` is how far the current episode has run against its time
-    limit: 0.0 at the start, 1.0 at the cap. Without it the episode's forced
-    ending is invisible to the agent, so the critic cannot tell a state at
-    t=5s from an identical-looking one at t=59s even though their true
-    returns differ enormously. Callers pass their own clock (see main.py) -
-    this function has no episode notion of its own.
-
-    Field order is mirrored by FEATURE_NAMES in state_vector_viewer.py; keep
-    the two in step.
-    """
+    """Build the 119-feature, mostly knight-relative Pure Vessel state."""
     knight_box = state["knight_box"]
     if knight_box is None:
         return None
 
-    return [
-        # --- knight ---
-        *knight_box,
-        state["knight_health"],
-        state["mana"],
-        int(state["knight_facing_right"]),
-        *state["knight_velocity"],
-        *attack_box_features(state["attack_box"]),
-        int(state["attacking"]),
+    knight_velocity = state["knight_velocity"]
+    kvx, kvy = knight_velocity
+    boss_present = state["boss_facing_left"] is not None
+    kx, ky = box_center(knight_box)
 
-        # --- hazards / boss ---
-        *hazard_box_features(state["hazard_boxes"]),
-        state["boss_health"],
-        boss_facing_flag(state["boss_facing_left"]),
-        *state["boss_velocity"],
+    if boss_present:
+        boss_hp_obs = state["boss_health"] if state["boss_health"] >= 0 else 0
+        bx, by = state["boss_position"]
+        boss_dx, boss_dy = _clip(bx - kx), _clip(by - ky)
+        bvx, bvy = state["boss_velocity"]
+        boss_rel_vx, boss_rel_vy = _clip(bvx - kvx), _clip(bvy - kvy)
+        if state["boss_box"] is not None:
+            bmin_x, bmin_y, bmax_x, bmax_y = state["boss_box"]
+            boss_width, boss_height = bmax_x - bmin_x, bmax_y - bmin_y
+        else:
+            boss_width = boss_height = 0.0
+        boss_facing_left = int(state["boss_facing_left"])
+        boss_faces_knight = int((boss_dx < 0 and boss_facing_left)
+                                or (boss_dx > 0 and not boss_facing_left))
+        knight_faces_boss = int((boss_dx > 0 and state["knight_facing_right"])
+                                or (boss_dx < 0 and not state["knight_facing_right"]))
+    else:
+        boss_hp_obs = 0
+        boss_dx = boss_dy = boss_rel_vx = boss_rel_vy = 0.0
+        boss_width = boss_height = 0.0
+        boss_facing_left = boss_faces_knight = knight_faces_boss = 0
 
-        # --- fight progress ---
-        state["hit_count"],
-        state["damage_count"],
+    hazards = state["hazards"]
+    nearest = (min(box_distance(knight_box, hazard.box) for hazard in hazards)
+               if hazards else NO_HAZARD_DISTANCE)
 
-        # --- derived features ---
-        # Everything above is absolute world coordinates; these give the
-        # network the relationships it would otherwise have to reconstruct
-        # from separately normalised absolutes.
-        boss_attack(state),
-        nearest_hazard_distance(knight_box, state["hazard_boxes"]),
-        relative_horizontal_position(state),
+    vector = [
+        # Knight state; no absolute world position.
+        state["knight_health"], state["mana"], int(state["knight_facing_right"]),
+        kvx, kvy, int(state["attacking"]), int(state["is_dashing"]),
+        int(state["is_jumping"]), int(state["is_falling"]),
+        int(state["is_recoiling"]), int(state["is_on_ground"]),
+        int(state["is_touching_wall_left"]), int(state["is_touching_wall_right"]),
+        min(max(state["wall_distance_left"], 0.0), MAX_OFFSET),
+        min(max(state["wall_distance_right"], 0.0), MAX_OFFSET),
+        int(state["can_shade_cloak_now"]), int(state["is_invuln"]),
 
-        # --- knight movement/action state (debug-mod style flags) ---
-        int(state["is_dashing"]),
-        int(state["is_jumping"]),
-        int(state["is_falling"]),
-        int(state["is_recoiling"]),
-        int(state["is_touching_wall_left"]),
-        int(state["is_touching_wall_right"]),
-        int(state["can_shade_cloak_now"]),
-        int(state["is_invuln"]),
+        # Nail box relative to the knight.
+        *_relative_box_features(knight_box, state["attack_box"]),
 
-        # --- episode clock ---
-        time_frac,
+        # Boss relative to the knight.
+        int(boss_present), boss_hp_obs, boss_dx, boss_dy,
+        boss_rel_vx, boss_rel_vy, boss_width, boss_height,
+        boss_facing_left, boss_faces_knight, knight_faces_boss,
 
-        # --- knight-relative offsets to hazard 1 and hazard 2 ---
-        *relative_offsets(knight_box, state["hazard_boxes"]),
+        # Fight progress.
+        state["hit_count"], state["damage_count"], time_frac,
+
+        # Global hazard summary.
+        len(hazards), nearest,
+        *_directional_hazard_gaps(knight_box, hazards),
+        int(boss_attack(state)),
+
+        # Move one-hot (PureVesselMove, 12 dims).
+        *_move_one_hot(boss_move(state)),
+
+        # Eight closest hazards, each in knight-relative coordinates.
+        *_hazard_features(knight_box, knight_velocity, hazards),
     ]
+
+    if len(vector) != OBSERVATION_SIZE:
+        raise RuntimeError(
+            f"observation width {len(vector)} != expected {OBSERVATION_SIZE}"
+        )
+    return vector
 
 
 def is_done():
-    return game_reader.boss_health <= 0 or game_reader.knight_health <= 0
+    # Boss is "defeated" only at an exact hp of 0. -1 means "no boss present"
+    # right now and must NOT end the episode.
+    return game_reader.boss_health == 0 or game_reader.knight_health <= 0

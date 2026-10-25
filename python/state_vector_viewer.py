@@ -10,33 +10,33 @@ import tkinter as tk
 import game_state
 from enviroment import get_state, state_to_vector
 
-# Must match the order state_to_vector() in enviroment.py builds the list in.
-# If that function's field order ever changes, update this list to match.
 FEATURE_NAMES = [
-    "knight_x", "knight_y", "knight_width", "knight_height",
     "knight_health", "mana", "knight_facing_right",
-    "knight_vel_x", "knight_vel_y",
-    "attackbox_x", "attackbox_y", "attackbox_width", "attackbox_height",
-    "attacking",
-    "hazard1_x", "hazard1_y", "hazard1_width", "hazard1_height",
-    "hazard2_x", "hazard2_y", "hazard2_width", "hazard2_height",
-    "boss_health", "boss_facing_direction",
-    "hazard_vel_x", "hazard_vel_y",
-    "hit_count", "damage_count",
-    "attack_type", "nearest_hazard_distance",
-    "relative_horizontal_position",
-    "is_dashing", "is_jumping", "is_falling", "is_recoiling",
-    "is_touching_wall_left", "is_touching_wall_right",
-    "can_shade_cloak_now",
+    "knight_vel_x", "knight_vel_y", "attacking", "is_dashing",
+    "is_jumping", "is_falling", "is_recoiling", "is_on_ground",
+    "touching_wall_left", "touching_wall_right",
+    "wall_distance_left", "wall_distance_right", "shade_cloak_ready",
     "is_invuln",
-    # This viewer has no episode clock of its own, so state_to_vector()'s
-    # default applies and this always reads 0.0 here. It is a live value
-    # during training - see main.py's episode_time_frac().
-    "time_frac",
-    # knight-relative offsets to the two tracked hazards
-    "offset1_x", "offset1_y",
-    "offset2_x", "offset2_y",
+    "attack_dx", "attack_dy", "attack_width", "attack_height", "attack_present",
+    "boss_present", "boss_health", "boss_dx", "boss_dy",
+    "boss_rel_vel_x", "boss_rel_vel_y", "boss_width", "boss_height",
+    "boss_facing_left", "boss_faces_knight", "knight_faces_boss",
+    "hit_count", "damage_count", "time_frac",
+    "hazard_count", "nearest_hazard_edge_distance",
+    "nearest_left", "nearest_right", "nearest_above", "nearest_below",
+    "attack_active",
+    "move_NONE", "move_TRIPLE_SLASH", "move_DASH", "move_DAGGER",
+    "move_PLUME", "move_DSTAB", "move_COUNTER", "move_FOCUS",
+    "move_TENDRIL", "move_TELEPORT", "move_STUN", "move_EVADE",
 ]
+
+for slot in range(1, 9):
+    FEATURE_NAMES.extend([
+        f"hazard{slot}_dx", f"hazard{slot}_dy",
+        f"hazard{slot}_width", f"hazard{slot}_height",
+        f"hazard{slot}_rel_vel_x", f"hazard{slot}_rel_vel_y",
+        f"hazard{slot}_boss_attached", f"hazard{slot}_present",
+    ])
 
 COLUMNS = 3
 REFRESH_MS = 150

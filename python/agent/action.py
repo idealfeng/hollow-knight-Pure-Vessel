@@ -13,9 +13,6 @@ from functools import partial
 
 import controls
 import game_state
-from agent.calc import calculate_area
-
-
 class movement:
     """Left/right ground movement. move_* hold the key (until stop()),
     turn_* only tap it to change facing without walking."""
@@ -100,54 +97,108 @@ def do_nothing():
 
 
 class BossAttack(IntEnum):
-    """Which move the boss is in the middle of.
-
-    Ordering is load-bearing: NONE and WINDUP are the two states in which
-    nothing can hit the knight, and everything from DASH upwards is a live
-    attack - see is_active, which reward.py uses to detect dodges.
-
-    Fed to the network as a plain number (IntEnum), so the values are part of
-    the observation and must not be renumbered without invalidating existing
-    checkpoints.
-    """
+    """Binary hazard-active signal, kept for the dodge reward."""
 
     NONE = 0
-    WINDUP = 1        # standing still, about to dash
-    DASH = 2
-    NEEDLE = 3
-    SILK = 4
-    AIR_DASH = 5      # the catch-all for an active attack we can't name
+    ACTIVE = 1
 
     @property
     def is_active(self):
-        """True while an attack is out and can actually connect."""
-        return self >= BossAttack.DASH
+        """True while an attack hazard can actually connect."""
+        return self == BossAttack.ACTIVE
 
 
-# Active attacks are told apart by the area of the boss's first hazard box -
-# each move spawns a differently sized hitbox. Areas come back from Unity as
-# floats, hence the rounding to 2 dp on lookup.
-_ATTACK_BY_HAZARD_AREA = {
-    2.35: BossAttack.DASH,
-    1.61: BossAttack.NEEDLE,
-    2.29: BossAttack.SILK,
+class PureVesselMove(IntEnum):
+    """Pure Vessel's moves, keyed off the Control FSM's ActiveStateName."""
+
+    NONE = 0
+    TRIPLE_SLASH = 1
+    DASH = 2
+    DAGGER = 3
+    PLUME = 4
+    DSTAB = 5
+    COUNTER = 6
+    FOCUS = 7
+    TENDRIL = 8
+    TELEPORT = 9
+    STUN = 10
+    EVADE = 11
+
+
+# Control FSM ActiveStateName -> move. Attack-relevant states only; anything
+# else (Idle, Intro, Turn Anim, Recover, Pause, ...) falls through to NONE.
+_FSM_TO_MOVE = {
+    "Slash1 Antic": PureVesselMove.TRIPLE_SLASH,
+    "Slash1": PureVesselMove.TRIPLE_SLASH,
+    "Slash1 Recover": PureVesselMove.TRIPLE_SLASH,
+    "Slash2 Recover": PureVesselMove.TRIPLE_SLASH,
+    "Slash 2": PureVesselMove.TRIPLE_SLASH,
+    "Slash 3": PureVesselMove.TRIPLE_SLASH,
+    "Slash3 Recover": PureVesselMove.TRIPLE_SLASH,
+    "Dash Antic": PureVesselMove.DASH,
+    "Dash": PureVesselMove.DASH,
+    "Dash Recover": PureVesselMove.DASH,
+    "SmallShot Antic": PureVesselMove.DAGGER,
+    "SmallShot LowHigh": PureVesselMove.DAGGER,
+    "SmallShot Recover": PureVesselMove.DAGGER,
+    "Plume Up": PureVesselMove.PLUME,
+    "Plume Pause": PureVesselMove.PLUME,
+    "Burst Pause": PureVesselMove.PLUME,
+    "Dstab Antic": PureVesselMove.DSTAB,
+    "Dstab Jump": PureVesselMove.DSTAB,
+    "Dstab Air": PureVesselMove.DSTAB,
+    "Stomp Antic": PureVesselMove.DSTAB,
+    "Stomp Down": PureVesselMove.DSTAB,
+    "Stomp Recover": PureVesselMove.DSTAB,
+    "Counter Stance": PureVesselMove.COUNTER,
+    "Counter Antic": PureVesselMove.COUNTER,
+    "Counter End": PureVesselMove.COUNTER,
+    "CS Antic": PureVesselMove.COUNTER,
+    "CSlash": PureVesselMove.COUNTER,
+    "CSlash Recover": PureVesselMove.COUNTER,
+    "Ball Up": PureVesselMove.FOCUS,
+    "Focus Charge": PureVesselMove.FOCUS,
+    "Focus Wait": PureVesselMove.FOCUS,
+    "Focus Burst": PureVesselMove.FOCUS,
+    "Hit End": PureVesselMove.FOCUS,
+    "Focus Recover": PureVesselMove.FOCUS,
+    "Tendril Antic": PureVesselMove.TENDRIL,
+    "Tendril Burst": PureVesselMove.TENDRIL,
+    "Tendril Start": PureVesselMove.TENDRIL,
+    "Tendril Hit": PureVesselMove.TENDRIL,
+    "T2": PureVesselMove.TENDRIL,
+    "T3": PureVesselMove.TENDRIL,
+    "Tendril Hit End": PureVesselMove.TENDRIL,
+    "Tendril Recover": PureVesselMove.TENDRIL,
+    "Tele Out": PureVesselMove.TELEPORT,
+    "Tele In": PureVesselMove.TELEPORT,
+    "Tele Cancel": PureVesselMove.TELEPORT,
+    "Stun": PureVesselMove.STUN,
+    "Stun Fall": PureVesselMove.STUN,
+    "Stun Air": PureVesselMove.STUN,
+    "StunHitUp": PureVesselMove.STUN,
+    "Evade Antic": PureVesselMove.EVADE,
+    "Evade": PureVesselMove.EVADE,
+    "EvadeRecover": PureVesselMove.EVADE,
 }
 
 
+def boss_move(state):
+    """Return Pure Vessel's current move from the Control FSM state."""
+    fsm_state = state.get("boss_control_state", "")
+    return _FSM_TO_MOVE.get(fsm_state, PureVesselMove.NONE)
+
+
 def boss_attack(state):
-    """Classify the boss's current move from its live hazard boxes."""
-    hazards = state["hazard_boxes"]
+    """Binary hazard-active signal, kept for the dodge reward.
 
-    # More than one hazard box means the boss has a weapon out, i.e. some
-    # attack is active. Which one is a question of hitbox size.
-    if len(hazards) > 1:
-        area = round(calculate_area(hazards[0]), 2)
-        return _ATTACK_BY_HAZARD_AREA.get(area, BossAttack.AIR_DASH)
-
-    # No weapon out, but stopped dead: winding up for a dash.
-    if state["boss_velocity"][0] == 0:
-        return BossAttack.WINDUP
-
+    Pure Vessel normally contributes one persistent contact collider. An
+    additional collider, or any detached DamageHero object, means an attack
+    hazard is live.
+    """
+    hazards = state.get("hazards", [])
+    if len(hazards) > 1 or any(not hazard.boss_attached for hazard in hazards):
+        return BossAttack.ACTIVE
     return BossAttack.NONE
 
 

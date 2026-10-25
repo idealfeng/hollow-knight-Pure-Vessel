@@ -86,14 +86,6 @@ def boxes_partial_intersect(box1, box2):
     return not (box1_inside_box2 or box2_inside_box1)
 
 
-
-
-def calculate_area(coordinates):
-    x, y, x2, y2 = coordinates
-    return abs(x-x2) * abs(y-y2)
-
-
-
 def rectangle_center_distance(rect1, rect2):
     # Centres come from box_center() so the corner-vs-width/height mix-up
     # that used to live here cannot come back in one copy only.

@@ -5,6 +5,17 @@ using UnityEngine;
 
 namespace KnightPos
 {
+    public struct HazardSnapshot
+    {
+        public int InstanceId;
+        public string ObjectName;
+        public string RootName;
+        public string HierarchyPath;
+        public Bounds Box;
+        public Vector2 Velocity;
+        public bool BossAttached;
+    }
+
     public class DiagnosticsOverlay : MonoBehaviour
     {
         private const string PureVesselObjectName = "HK Prime";
@@ -13,6 +24,15 @@ namespace KnightPos
 
         private HealthManager cachedBoss;
         private float nextBossSearchAt;
+
+        private struct HazardMotion
+        {
+            public Vector2 Center;
+            public float GameTime;
+        }
+
+        private readonly Dictionary<int, HazardMotion> hazardMotion =
+            new Dictionary<int, HazardMotion>();
 
         public Bounds GetKnightBox()
         {
@@ -44,6 +64,14 @@ namespace KnightPos
             return HeroController.instance.cState.falling;
         }
 
+        public bool IsOnGround()
+        {
+            // Unlike the old Python comparison against a Hornet-arena Y
+            // constant, this is the game's authoritative grounded state and
+            // remains valid in every scene and on uneven platforms.
+            return HeroController.instance.cState.onGround;
+        }
+
         public bool IsRecoiling()
         {
             return HeroController.instance.cState.recoiling;
@@ -59,6 +87,24 @@ namespace KnightPos
         public bool IsTouchingWallRight()
         {
             return Traverse.Create(HeroController.instance).Field("touchingWallR").GetValue<bool>();
+        }
+
+        public Vector2 GetWallDistances()
+        {
+            // Pure Vessel's arena is flat, but absolute world X still makes a
+            // poor policy input. Raycast only against terrain so enemies and
+            // temporary attack objects cannot masquerade as a wall.
+            int terrainLayer = LayerMask.NameToLayer("Terrain");
+            if (terrainLayer < 0)
+                return new Vector2(100f, 100f);
+
+            int terrainMask = 1 << terrainLayer;
+            Vector2 origin = GetKnightBox().center;
+            RaycastHit2D left = Physics2D.Raycast(origin, Vector2.left, 100f, terrainMask);
+            RaycastHit2D right = Physics2D.Raycast(origin, Vector2.right, 100f, terrainMask);
+            return new Vector2(
+                left.collider != null ? left.distance : 100f,
+                right.collider != null ? right.distance : 100f);
         }
 
         // Shade Cloak is tracked internally as "hasShadowDash" (not
@@ -139,9 +185,11 @@ namespace KnightPos
         // scene scans for the same object - a call Unity's own docs say not
         // to make even once per frame. Callers now fetch the boss once (via
         // GetBoss()) and pass it in.
-        public int GetBossHealth(HealthManager boss)
+        public int? GetBossHealth(HealthManager boss)
         {
-            return boss != null ? boss.hp : 0;
+            // null means "no boss object to read right now" - NOT 0 hp. The
+            // caller must distinguish "missing" from "defeated" itself.
+            return boss != null ? boss.hp : (int?)null;
         }
 
         public bool? IsBossFacingRight(HealthManager boss)
@@ -159,6 +207,23 @@ namespace KnightPos
 
             Rigidbody2D rb = boss.GetComponent<Rigidbody2D>();
             return rb != null ? rb.velocity : Vector2.zero;
+        }
+
+        public Vector2 GetBossPosition(HealthManager boss)
+        {
+            return boss != null ? (Vector2)boss.transform.position : Vector2.zero;
+        }
+
+        public Bounds? GetBossBox(HealthManager boss)
+        {
+            if (boss == null)
+                return null;
+
+            Collider2D collider = boss.GetComponent<Collider2D>();
+            if (collider == null)
+                collider = boss.GetComponentInChildren<Collider2D>();
+
+            return collider != null && collider.enabled ? collider.bounds : (Bounds?)null;
         }
 
         // HeroController keeps 5 separate NailSlash instances as fields
@@ -184,32 +249,226 @@ namespace KnightPos
             return col.bounds;
         }
 
-        private readonly List<DamageHero> trackedHazards = new List<DamageHero>();
-
-        public List<Bounds> GetHazardBoxes()
+        public List<HazardSnapshot> GetHazards(HealthManager boss)
         {
             DamageHero[] currentHazards = FindObjectsOfType<DamageHero>();
+            var snapshots = new List<HazardSnapshot>();
+            var liveIds = new HashSet<int>();
+            float now = Time.time;
 
-            // drop hazards that no longer exist, keep the rest in their original order
-            trackedHazards.RemoveAll(h => h == null || System.Array.IndexOf(currentHazards, h) < 0);
-
-            // newly seen hazards go to the back of the queue
             foreach (DamageHero hazard in currentHazards)
             {
-                if (!trackedHazards.Contains(hazard))
-                    trackedHazards.Add(hazard);
-            }
+                if (hazard == null || !hazard.gameObject.activeInHierarchy)
+                    continue;
 
-            var boxes = new List<Bounds>();
-
-            foreach (DamageHero hazard in trackedHazards)
-            {
                 Collider2D col = hazard.GetComponent<Collider2D>();
-                if (col != null)
-                    boxes.Add(col.bounds);
+                if (col == null || !col.enabled)
+                    continue;
+
+                int id = hazard.GetInstanceID();
+                liveIds.Add(id);
+                Bounds box = col.bounds;
+                Vector2 center = box.center;
+                Vector2 velocity = Vector2.zero;
+
+                Rigidbody2D rb = hazard.GetComponent<Rigidbody2D>();
+                if (rb != null)
+                {
+                    velocity = rb.velocity;
+                }
+                else
+                {
+                    HazardMotion previous;
+                    if (hazardMotion.TryGetValue(id, out previous))
+                    {
+                        float dt = now - previous.GameTime;
+                        if (dt > 0.0001f)
+                            velocity = (center - previous.Center) / dt;
+                    }
+                }
+
+                hazardMotion[id] = new HazardMotion { Center = center, GameTime = now };
+
+                Transform root = hazard.transform.root;
+                snapshots.Add(new HazardSnapshot
+                {
+                    InstanceId = id,
+                    ObjectName = hazard.gameObject.name,
+                    RootName = root != null ? root.name : "",
+                    HierarchyPath = GetHierarchyPath(hazard.transform),
+                    Box = box,
+                    Velocity = velocity,
+                    BossAttached = boss != null
+                        && (hazard.transform == boss.transform
+                            || hazard.transform.IsChildOf(boss.transform)),
+                });
             }
 
-            return boxes;
+            var staleIds = new List<int>();
+            foreach (int id in hazardMotion.Keys)
+            {
+                if (!liveIds.Contains(id))
+                    staleIds.Add(id);
+            }
+            foreach (int id in staleIds)
+                hazardMotion.Remove(id);
+
+            return snapshots;
         }
+
+        private static string GetHierarchyPath(Transform node)
+        {
+            var names = new List<string>();
+            while (node != null)
+            {
+                names.Add(node.name);
+                node = node.parent;
+            }
+            names.Reverse();
+            return string.Join("/", names.ToArray());
+        }
+
+        private bool ShowColliders = true;
+        private Material _lineMaterial;
+        private GUIStyle _labelStyle;
+        private bool LockKnightHealth = false;
+
+        // F8 toggles a debug health lock so Pure Vessel's moves can be watched
+        // without dying to the first few attacks. Debug only - training assumes
+        // the knight can actually die.
+        private void Update()
+        {
+            if (Input.GetKeyDown(KeyCode.F8))
+                LockKnightHealth = !LockKnightHealth;
+
+            if (LockKnightHealth
+                && HeroController.instance != null
+                && PlayerData.instance != null
+                && PlayerData.instance.health < 9)
+            {
+                PlayerData.instance.health = 9;
+            }
+        }
+
+
+        // Debug overlay: draw every relevant collider as a wireframe box in the
+        // game view so move handling can be eyeballed directly. F9 toggles it.
+        // Green=knight, red=boss body, cyan=nail hitbox, yellow=detached hazard,
+        // magenta=hazard attached to the boss.
+        private void OnGUI()
+        {
+            if (Event.current.type == EventType.KeyDown
+                && Event.current.keyCode == KeyCode.F9)
+            {
+                ShowColliders = !ShowColliders;
+            }
+
+            if (!ShowColliders)
+                return;
+
+            // The knight only exists once a save is loaded; drawing before that
+            // throws on every frame and corrupts the GL/matrix state (black screen).
+            if (HeroController.instance == null)
+                return;
+
+            Camera cam = Camera.main;
+            if (cam == null)
+                return;
+
+            if (_lineMaterial == null)
+                _lineMaterial = new Material(Shader.Find("Hidden/Internal-Colored"));
+
+            if (_labelStyle == null)
+            {
+                _labelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 13,
+                };
+                _labelStyle.normal.textColor = Color.white;
+            }
+
+            HealthManager boss = GetBoss();
+
+            if (Event.current.type == EventType.Repaint)
+            {
+                _lineMaterial.SetPass(0);
+                GL.PushMatrix();
+                GL.LoadPixelMatrix(0, cam.pixelWidth, cam.pixelHeight, 0);
+                try
+                {
+                    GL.Begin(GL.LINES);
+
+                    DrawBox(cam, GetKnightBox(), Color.green);
+
+                    if (boss != null)
+                    {
+                        Bounds? bossBox = GetBossBox(boss);
+                        if (bossBox.HasValue)
+                            DrawBox(cam, bossBox.Value, Color.red);
+                    }
+
+                    if (IsAttacking())
+                    {
+                        Bounds? atk = GetAttackBox();
+                        if (atk.HasValue)
+                            DrawBox(cam, atk.Value, Color.cyan);
+                    }
+
+                    foreach (HazardSnapshot hazard in GetHazards(boss))
+                    {
+                        Color color = hazard.BossAttached ? Color.magenta : Color.yellow;
+                        DrawBox(cam, hazard.Box, color);
+                    }
+                }
+                finally
+                {
+                    GL.End();
+                    GL.PopMatrix();
+                }
+            }
+
+            foreach (HazardSnapshot hazard in GetHazards(boss))
+            {
+                DrawLabel(cam, hazard.Box.center, hazard.ObjectName, Color.yellow);
+            }
+        }
+
+        private void DrawBox(Camera cam, Bounds box, Color color)
+        {
+            Vector2 p0 = ToScreen(cam, new Vector3(box.min.x, box.min.y, 0));
+            Vector2 p1 = ToScreen(cam, new Vector3(box.max.x, box.min.y, 0));
+            Vector2 p2 = ToScreen(cam, new Vector3(box.max.x, box.max.y, 0));
+            Vector2 p3 = ToScreen(cam, new Vector3(box.min.x, box.max.y, 0));
+
+            DrawLine(p0, p1, color);
+            DrawLine(p1, p2, color);
+            DrawLine(p2, p3, color);
+            DrawLine(p3, p0, color);
+        }
+
+        private void DrawLine(Vector2 a, Vector2 b, Color color)
+        {
+            GL.Color(color);
+            GL.Vertex3(a.x, a.y, 0);
+            GL.Vertex3(b.x, b.y, 0);
+        }
+
+        private static Vector2 ToScreen(Camera cam, Vector3 world)
+        {
+            Vector3 sp = cam.WorldToScreenPoint(world);
+            return new Vector2(sp.x, cam.pixelHeight - sp.y);
+        }
+
+        private void DrawLabel(Camera cam, Vector3 worldPos, string text, Color color)
+        {
+            GUIContent content = new GUIContent(text);
+            Vector2 size = _labelStyle.CalcSize(content);
+            Vector2 gui = ToScreen(cam, worldPos);
+            Rect rect = new Rect(gui.x - size.x / 2f, gui.y - size.y - 2f,
+                                 size.x + 4f, size.y);
+            _labelStyle.normal.textColor = color;
+            GUI.Label(rect, content, _labelStyle);
+        }
+
     }
 }

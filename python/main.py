@@ -13,7 +13,9 @@ import torch.optim as optim
 
 import controls
 import game_state
-from enviroment import get_state, state_to_vector, reset_environment, is_done
+from enviroment import (
+    OBSERVATION_SIZE, get_state, state_to_vector, reset_environment, is_done,
+)
 from agent import calculate_reward
 from agent.action import (
     movement_actions, look_actions, attack_actions,
@@ -31,7 +33,7 @@ from obs_norm import RunningNorm
 # ======================================================================
 # OBSERVATION / ACTION SPACE
 # Must match state_to_vector()'s output width and agent/action.py's groups.
-STATE_SIZE = 44
+STATE_SIZE = OBSERVATION_SIZE
 
 ACTION_GROUPS = [movement_actions, look_actions, attack_actions, dash_actions, jump_actions]
 ACTION_SIZES = [len(g) for g in ACTION_GROUPS]   # [6, 4, 2, 2, 3]
@@ -317,13 +319,26 @@ def train_loop():
             done = is_done()
 
             if next_raw is None:
-                # Lost contact with the game reader. Treat as a truncation so
-                # the advantage chain gets cut cleanly instead of joining two
-                # unrelated moments together.
+                # A Pure Vessel victory can remove the HeroController during
+                # the same transition that removes the boss. The mod latches
+                # boss_health=0 even though no vector can be built without a
+                # knight box; synthesize only that terminal field from the
+                # last valid state so the final hit/win reward is not lost.
                 done = True
-                next_state, next_raw = state, raw_obs
+                if game_state.boss_health == 0:
+                    next_state = dict(state)
+                    next_state["boss_health"] = 0
+                    next_state["boss_facing_left"] = None
+                    next_state["boss_control_state"] = ""
+                    next_raw = raw_obs
+                else:
+                    # A genuine disconnect/transition is a truncation: cut
+                    # the advantage chain instead of joining unrelated states.
+                    next_state, next_raw = state, raw_obs
 
-            reward = calculate_reward(state, next_state, done, timed_out=timed_out)
+            reward = calculate_reward(
+                state, next_state, done, timed_out=timed_out, step_dt=STEP_DT,
+            )
 
             episode_reward += reward          # log the RAW reward
             episode_steps += 1

@@ -44,6 +44,7 @@ attack_box = None
 hit_count = 0
 damage_count = 0
 hazard_boxes = []
+hazards = []
 
 # hit_count/damage_count from the mod never reset - they count for the whole
 # BepInEx session, across every episode. These snapshot the raw counters at
@@ -67,9 +68,16 @@ _prev_damages = None
 
 knight_velocity = (0.0, 0.0)
 knight_facing_right = True
-boss_health = 0
+# -1 = no boss present, 0 = confirmed defeat, >0 = alive. Never treat "missing"
+# as "dead" - that produced false BOSS_DEFEATED rewards.
+boss_health = -1
 boss_facing_left = None  # None means no boss found
 boss_velocity = (0.0, 0.0)
+boss_position = (0.0, 0.0)
+boss_box = None
+boss_control_state = ""
+wall_distance_left = 100.0
+wall_distance_right = 100.0
 knight_health = 0
 mana = 0
 game_speed = 1.0
@@ -78,6 +86,7 @@ training_paused = False
 is_dashing = False
 is_jumping = False
 is_falling = False
+is_on_ground = False
 is_recoiling = False
 is_touching_wall_left = False
 is_touching_wall_right = False
@@ -85,6 +94,16 @@ can_shade_cloak_now = False
 is_invuln = False
 
 _thread = None
+
+
+@dataclass(frozen=True)
+class Hazard:
+    """One live DamageHero collider reported by the Unity mod."""
+
+    instance_id: int
+    box: tuple
+    velocity: tuple
+    boss_attached: bool
 
 
 @dataclass(frozen=True)
@@ -102,14 +121,20 @@ class Frame:
     boss_health: int
     boss_facing_left: bool       # None when no boss was found
     boss_velocity: tuple
+    boss_position: tuple
+    boss_box: tuple              # None when no target boss is present
+    boss_control_state: str      # Control FSM ActiveStateName, "" when absent
+    wall_distance_left: float
+    wall_distance_right: float
     knight_health: int
     mana: int
     game_speed: float
     training_paused: bool
-    hazard_boxes: list
+    hazards: list
     is_dashing: bool
     is_jumping: bool
     is_falling: bool
+    is_on_ground: bool
     is_recoiling: bool
     is_touching_wall_left: bool
     is_touching_wall_right: bool
@@ -126,8 +151,9 @@ def _parse_frame(response):
         2: attack box            same as 0, or empty when not swinging
         3: counters              hits,damages   (lifetime, never reset)
         4: scalars               see the unpack below
-        5: flags                 nine "1"/"0"s
-        6+: one hazard box each  same as 0
+        5: flags                 ten "1"/"0"s (last is authoritative ground)
+        6: boss box              same as 0, or empty when absent
+        7+: hazard               id,box(4),velocity(2),boss_attached
     """
     parts = response.split(";")
 
@@ -140,11 +166,29 @@ def _parse_frame(response):
     hits, damages = map(int, parts[3].split(","))
 
     (vel_x, vel_y, facing_right, health, boss_facing,
-     boss_vel_x, boss_vel_y, hero_health, mp, speed) = parts[4].split(",")
+     boss_vel_x, boss_vel_y, hero_health, mp, speed,
+     boss_x, boss_y,
+     wall_left_distance, wall_right_distance) = parts[4].split(",")
 
     (dashing, jumping, falling, recoiling,
      touching_wall_left, touching_wall_right,
-     shade_cloak_now, invuln, paused) = (flag == "1" for flag in parts[5].split(","))
+     shade_cloak_now, invuln, paused,
+     on_ground) = (flag == "1" for flag in parts[5].split(","))
+
+    boss_control_state = parts[6] if len(parts) > 6 else ""
+
+    parsed_hazards = []
+    for payload in parts[8:]:
+        if not payload:
+            continue
+        (instance_id, min_x, min_y, max_x, max_y,
+         hazard_vel_x, hazard_vel_y, boss_attached) = payload.split(",")
+        parsed_hazards.append(Hazard(
+            instance_id=int(instance_id),
+            box=(float(min_x), float(min_y), float(max_x), float(max_y)),
+            velocity=(float(hazard_vel_x), float(hazard_vel_y)),
+            boss_attached=boss_attached == "1",
+        ))
 
     return Frame(
         knight_box=box,
@@ -159,14 +203,20 @@ def _parse_frame(response):
         # boss in the scene at all" - which is not the same as facing right.
         boss_facing_left={"1": False, "0": True, "-1": None}[boss_facing],
         boss_velocity=(float(boss_vel_x), float(boss_vel_y)),
+        boss_position=(float(boss_x), float(boss_y)),
+        boss_box=tuple(map(float, parts[7].split(","))) if len(parts) > 7 and parts[7] else None,
+        boss_control_state=boss_control_state,
+        wall_distance_left=float(wall_left_distance),
+        wall_distance_right=float(wall_right_distance),
         knight_health=int(hero_health),
         mana=int(mp),
         game_speed=float(speed),
         training_paused=paused,
-        hazard_boxes=[tuple(map(float, p.split(","))) for p in parts[6:] if p],
+        hazards=parsed_hazards,
         is_dashing=dashing,
         is_jumping=jumping,
         is_falling=falling,
+        is_on_ground=on_ground,
         is_recoiling=recoiling,
         is_touching_wall_left=touching_wall_left,
         is_touching_wall_right=touching_wall_right,
@@ -192,10 +242,11 @@ def _update_hit_streak(frame):
 
 def _publish(frame):
     """Copy a parsed frame into the module globals readers watch."""
-    global knight_box, attacking, attack_box, hit_count, damage_count, hazard_boxes
+    global knight_box, attacking, attack_box, hit_count, damage_count, hazard_boxes, hazards
     global knight_velocity, knight_facing_right, boss_health, boss_facing_left
-    global boss_velocity, knight_health, mana, game_speed, training_paused
-    global is_dashing, is_jumping, is_falling, is_recoiling
+    global boss_velocity, boss_position, boss_box, boss_control_state, knight_health, mana, game_speed, training_paused
+    global wall_distance_left, wall_distance_right
+    global is_dashing, is_jumping, is_falling, is_on_ground, is_recoiling
     global is_touching_wall_left, is_touching_wall_right
     global can_shade_cloak_now, is_invuln
 
@@ -204,12 +255,18 @@ def _publish(frame):
     attack_box = frame.attack_box
     hit_count = frame.hit_count
     damage_count = frame.damage_count
-    hazard_boxes = frame.hazard_boxes
+    hazards = frame.hazards
+    hazard_boxes = [hazard.box for hazard in frame.hazards]
     knight_velocity = frame.knight_velocity
     knight_facing_right = frame.knight_facing_right
     boss_health = frame.boss_health
     boss_facing_left = frame.boss_facing_left
     boss_velocity = frame.boss_velocity
+    boss_position = frame.boss_position
+    boss_box = frame.boss_box
+    boss_control_state = frame.boss_control_state
+    wall_distance_left = frame.wall_distance_left
+    wall_distance_right = frame.wall_distance_right
     knight_health = frame.knight_health
     mana = frame.mana
     game_speed = frame.game_speed
@@ -218,6 +275,7 @@ def _publish(frame):
     is_dashing = frame.is_dashing
     is_jumping = frame.is_jumping
     is_falling = frame.is_falling
+    is_on_ground = frame.is_on_ground
     is_recoiling = frame.is_recoiling
     is_touching_wall_left = frame.is_touching_wall_left
     is_touching_wall_right = frame.is_touching_wall_right
@@ -227,7 +285,7 @@ def _publish(frame):
 
 def _on_disconnect():
     """Blank out anything that would be a lie while we have no feed."""
-    global connected, knight_box, attacking, attack_box, hazard_boxes
+    global connected, knight_box, attacking, attack_box, hazard_boxes, hazards
     global hit_streak, _prev_hits, _prev_damages
 
     connected = False
@@ -235,6 +293,7 @@ def _on_disconnect():
     attacking = False
     attack_box = None
     hazard_boxes = []
+    hazards = []
     # Don't bridge a streak across a dropped connection.
     hit_streak = 0
     _prev_hits = None
