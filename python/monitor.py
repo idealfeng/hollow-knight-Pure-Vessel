@@ -13,10 +13,10 @@ MIN_SAVE_INTERVAL = 5.0  # seconds between history writes to disk
 
 # ppo_model.evaluate() SUMS entropy across the independent action heads, so the
 # ceiling is sum(ln(n)) over the head sizes - not ln(8), which was the old
-# single-8-action-space value and is far below the real maximum (5.66 for
-# [6,4,2,2,3]). Drawn as "max (uniform)" on the entropy plot, so a stale value
-# makes a perfectly healthy policy look like it is off the top of the chart.
-DEFAULT_ACTION_SIZES = [6, 4, 2, 2, 3]
+# single-8-action-space value and is far below the real maximum (5.11 for
+# [5,3,2,2,3] after move/look lost their do_nothing). Drawn as "max (uniform)"
+# on the entropy plot, so a stale value makes a healthy policy look off the chart.
+DEFAULT_ACTION_SIZES = [5, 3, 2, 2, 3]
 
 
 def max_entropy(action_sizes):

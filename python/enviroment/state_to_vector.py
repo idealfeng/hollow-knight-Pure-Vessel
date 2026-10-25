@@ -1,7 +1,7 @@
 """Raw game-state snapshots and Pure Vessel's relative observation vector."""
 
 import game_state as game_reader
-from agent.action import boss_attack, boss_move, PureVesselMove
+from agent.action import boss_attack, boss_move, boss_phase, PureVesselMove, PureVesselPhase
 from agent.calc import box_center, box_distance
 
 game_reader.start()
@@ -9,7 +9,7 @@ game_reader.start()
 
 TRACKED_HAZARDS = 8
 HAZARD_FEATURES = 8
-BASE_FEATURES = 55
+BASE_FEATURES = 61
 OBSERVATION_SIZE = BASE_FEATURES + TRACKED_HAZARDS * HAZARD_FEATURES
 MAX_OFFSET = 50.0
 NO_HAZARD_DISTANCE = 50.0
@@ -29,6 +29,12 @@ def _clip(value, limit=MAX_OFFSET):
 def _move_one_hot(move):
     one_hot = [0] * len(PureVesselMove)
     one_hot[int(move)] = 1
+    return one_hot
+
+
+def _phase_one_hot(phase):
+    one_hot = [0] * len(PureVesselPhase)
+    one_hot[int(phase)] = 1
     return one_hot
 
 
@@ -230,6 +236,9 @@ def state_to_vector(state, time_frac=0.0):
 
         # Move one-hot (PureVesselMove, 12 dims).
         *_move_one_hot(boss_move(state)),
+
+        # Phase one-hot (PureVesselPhase, 6 dims).
+        *_phase_one_hot(boss_phase(state)),
 
         # Eight closest hazards, each in knight-relative coordinates.
         *_hazard_features(knight_box, knight_velocity, hazards),

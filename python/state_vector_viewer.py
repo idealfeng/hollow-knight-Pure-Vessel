@@ -28,6 +28,8 @@ FEATURE_NAMES = [
     "move_NONE", "move_TRIPLE_SLASH", "move_DASH", "move_DAGGER",
     "move_PLUME", "move_DSTAB", "move_COUNTER", "move_FOCUS",
     "move_TENDRIL", "move_TELEPORT", "move_STUN", "move_EVADE",
+    "phase_NEUTRAL", "phase_WINDUP", "phase_ACTIVE",
+    "phase_RECOVERY", "phase_STUN", "phase_UNKNOWN",
 ]
 
 for slot in range(1, 9):

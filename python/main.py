@@ -36,7 +36,7 @@ from obs_norm import RunningNorm
 STATE_SIZE = OBSERVATION_SIZE
 
 ACTION_GROUPS = [movement_actions, look_actions, attack_actions, dash_actions, jump_actions]
-ACTION_SIZES = [len(g) for g in ACTION_GROUPS]   # [6, 4, 2, 2, 3]
+ACTION_SIZES = [len(g) for g in ACTION_GROUPS]   # [5, 3, 2, 2, 3]
 
 
 # ======================================================================

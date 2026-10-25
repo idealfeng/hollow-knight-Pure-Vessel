@@ -1,0 +1,265 @@
+﻿=== per-state: count / median duration / hazard% / median speed / top anim / transitions ===
+
+[Ball Up]  runs=135  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Focus Antic', 338)]
+   -> [('Idle', 21), ('Focus Burst', 14), ('Intro 3', 12)]
+
+[Burst Pause]  runs=578  med_frames=2  med_s=0.05
+   hazard%=100  med_speed=0.00  anim=[('DStab Land', 1282)]
+   -> [('Plume Up', 482), ('Intro 1', 21), ('Tele In', 9)]
+
+[CS Antic]  runs=61  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Counter Block', 457)]
+   -> [('CSlash', 25), ('Intro 2', 7), ('Intro 5', 6)]
+
+[CSlash]  runs=30  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=120.00  anim=[('Slash2', 57)]
+   -> [('CSlash Recover', 25), ('Intro 5', 1), ('Intro 1', 1)]
+
+[CSlash Recover]  runs=42  med_frames=3  med_s=0.10
+   hazard%=100  med_speed=0.00  anim=[('Slash2 Recover', 102)]
+   -> [('Recover', 25), ('Plume Pause', 3), ('Stomp Antic', 3)]
+
+[Counter Antic]  runs=331  med_frames=4  med_s=0.16
+   hazard%=100  med_speed=0.00  anim=[('Counter Antic', 1153)]
+   -> [('Counter Stance', 226), ('Idle', 17), ('Intro 1', 12)]
+
+[Counter End]  runs=252  med_frames=4  med_s=0.15
+   hazard%=100  med_speed=0.00  anim=[('Counter End', 819)]
+   -> [('Idle', 120), ('Turn Anim', 50), ('Evade Antic', 28)]
+
+[Counter Stance]  runs=403  med_frames=6  med_s=0.21
+   hazard%=100  med_speed=0.00  anim=[('Counter Ready', 2254)]
+   -> [('Counter End', 195), ('CS Antic', 24), ('Slash1 Antic', 18)]
+
+[Dash]  runs=733  med_frames=4  med_s=0.14
+   hazard%=100  med_speed=60.00  anim=[('Dash', 3395)]
+   -> [('Dash Recover', 578), ('Idle', 19), ('Intro 1', 12)]
+
+[Dash Antic]  runs=967  med_frames=9  med_s=0.42
+   hazard%=100  med_speed=0.00  anim=[('Dash Antic', 5907)]
+   -> [('Dash', 581), ('Idle', 61), ('Intro 1', 35)]
+
+[Dash Recover]  runs=792  med_frames=5  med_s=0.21
+   hazard%=100  med_speed=10.07  anim=[('Dash Recover', 3651)]
+   -> [('Turn Anim', 302), ('Idle', 177), ('Counter Antic', 55)]
+
+[Dstab Air]  runs=210  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=32.36  anim=[('Jump', 549)]
+   -> [('Stomp Antic', 133), ('Recover', 22), ('Slash1 Antic', 16)]
+
+[Dstab Antic]  runs=418  med_frames=5  med_s=0.21
+   hazard%=100  med_speed=0.00  anim=[('Antic', 1621)]
+   -> [('Dstab Jump', 279), ('Intro 1', 29), ('Intro Roar', 15)]
+
+[Dstab Jump]  runs=380  med_frames=4  med_s=0.15
+   hazard%=100  med_speed=52.20  anim=[('Jump', 1215)]
+   -> [('Dstab Air', 154), ('Stomp Antic', 121), ('Intro 1', 19)]
+
+[Evade]  runs=290  med_frames=2  med_s=0.05
+   hazard%=100  med_speed=70.00  anim=[('Evade', 605)]
+   -> [('EvadeRecover', 236), ('Intro Roar', 10), ('Plume Pause', 5)]
+
+[Evade Antic]  runs=304  med_frames=3  med_s=0.10
+   hazard%=100  med_speed=0.00  anim=[('Evade Antic', 869)]
+   -> [('Evade', 237), ('Intro Roar', 9), ('Idle', 7)]
+
+[EvadeRecover]  runs=345  med_frames=5  med_s=0.21
+   hazard%=100  med_speed=0.00  anim=[('Recover', 1264)]
+   -> [('Tele Out', 138), ('Slash1 Antic', 38), ('Dstab Antic', 33)]
+
+[Focus Burst]  runs=61  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Focus Burst', 131)]
+   -> [('Hit End', 14), ('SmallShot Antic', 8), ('Idle', 7)]
+
+[Focus Charge]  runs=74  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Focus Antic', 168)]
+   -> [('Ball Up', 14), ('SmallShot LowHigh', 8), ('Intro 3', 8)]
+
+[Focus Recover]  runs=53  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Recover', 110)]
+   -> [('Focus Wait', 14), ('SmallShot LowHigh', 8), ('Burst Pause', 6)]
+
+[Focus Wait]  runs=88  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Idle', 195)]
+   -> [('Idle', 12), ('Intro 1', 12), ('SmallShot LowHigh', 8)]
+
+[Hit End]  runs=60  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Focus Burst', 127)]
+   -> [('Focus Recover', 14), ('SmallShot Antic', 11), ('Plume Pause', 8)]
+
+[Idle]  runs=3286  med_frames=7  med_s=0.30
+   hazard%=100  med_speed=0.00  anim=[('Idle', 19278)]
+   -> [('Tele Out', 1280), ('Slash1 Antic', 420), ('Dstab Antic', 256)]
+
+[Intro 1]  runs=1142  med_frames=1  med_s=0.00
+   hazard%=0  med_speed=0.00  anim=[('Intro 1', 28437)]
+   -> [('Intro 2', 343), ('Idle', 105), ('Plume Pause', 61)]
+
+[Intro 2]  runs=638  med_frames=1  med_s=0.00
+   hazard%=0  med_speed=0.00  anim=[('Intro 2', 10623)]
+   -> [('Intro 3', 344), ('Idle', 38), ('SmallShot Antic', 33)]
+
+[Intro 3]  runs=698  med_frames=1  med_s=0.00
+   hazard%=0  med_speed=0.00  anim=[('Intro 3', 12057)]
+   -> [('Intro 4', 311), ('Intro 2', 32), ('SmallShot LowHigh', 31)]
+
+[Intro 4]  runs=326  med_frames=1  med_s=0.00
+   hazard%=0  med_speed=0.00  anim=[('Intro 4', 472)]
+   -> [('Intro 5', 310), ('Idle', 5), ('Stomp Down', 2)]
+
+[Intro 5]  runs=515  med_frames=18  med_s=0.93
+   hazard%=0  med_speed=0.00  anim=[('Intro 5', 6055)]
+   -> [('Intro 6', 310), ('Intro 1', 19), ('Intro Roar', 19)]
+
+[Intro 6]  runs=376  med_frames=6  med_s=0.27
+   hazard%=0  med_speed=0.00  anim=[('Intro 6', 2047)]
+   -> [('Intro Roar', 315), ('Idle', 16), ('Plume Pause', 12)]
+
+[Intro Idle]  runs=361  med_frames=5  med_s=0.21
+   hazard%=0  med_speed=0.00  anim=[('Idle', 1531)]
+   -> [('Idle', 168), ('Turn Anim', 125), ('Evade Antic', 9)]
+
+[Intro Roar]  runs=871  med_frames=1  med_s=0.00
+   hazard%=0  med_speed=0.00  anim=[('Roar', 18252)]
+   -> [('Intro Roar End', 315), ('Idle', 60), ('Slash1 Antic', 42)]
+
+[Intro Roar End]  runs=363  med_frames=5  med_s=0.21
+   hazard%=0  med_speed=0.00  anim=[('Recover', 1603)]
+   -> [('Intro Idle', 309), ('Plume Up', 7), ('Idle', 6)]
+
+[Pause]  runs=10  med_frames=1  med_s=0.00
+   hazard%=0  med_speed=0.00  anim=[('Intro 1', 10)]
+   -> [('Intro 1', 9), ('Slash1 Antic', 1)]
+
+[Plume Pause]  runs=856  med_frames=9  med_s=0.41
+   hazard%=100  med_speed=0.00  anim=[('DStab Land', 5260)]
+   -> [('Burst Pause', 484), ('Intro 1', 57), ('Intro Roar', 35)]
+
+[Plume Up]  runs=682  med_frames=5  med_s=0.20
+   hazard%=100  med_speed=0.00  anim=[('Recover', 3562)]
+   -> [('Stomp Recover', 466), ('Intro 1', 39), ('Tele In', 14)]
+
+[Recover]  runs=88  med_frames=5  med_s=0.20
+   hazard%=100  med_speed=0.00  anim=[('Recover', 287)]
+   -> [('Turn Anim', 35), ('Idle', 10), ('Slash1 Antic', 6)]
+
+[Slash 2]  runs=622  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=60.00  anim=[('Slash2', 1160)]
+   -> [('Slash2 Recover', 582), ('Idle', 5), ('Intro Roar', 4)]
+
+[Slash 3]  runs=620  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=60.00  anim=[('Slash3', 859)]
+   -> [('Slash3 Recover', 578), ('Intro 1', 6), ('Idle', 4)]
+
+[Slash1]  runs=667  med_frames=2  med_s=0.05
+   hazard%=100  med_speed=60.00  anim=[('Slash1', 2443)]
+   -> [('Slash1 Recover', 589), ('Idle', 14), ('Intro 1', 11)]
+
+[Slash1 Antic]  runs=1064  med_frames=12  med_s=0.58
+   hazard%=100  med_speed=0.00  anim=[('Slash1 Antic', 8345)]
+   -> [('Slash1', 591), ('SmallShot LowHigh', 49), ('Intro 1', 44)]
+
+[Slash1 Recover]  runs=709  med_frames=3  med_s=0.11
+   hazard%=100  med_speed=0.00  anim=[('Slash1 Recover', 2165)]
+   -> [('Slash 2', 582), ('Idle', 25), ('Intro Roar', 13)]
+
+[Slash2 Recover]  runs=704  med_frames=3  med_s=0.11
+   hazard%=100  med_speed=0.00  anim=[('Slash2 Recover', 2207)]
+   -> [('Slash 3', 581), ('Idle', 13), ('Intro Roar', 10)]
+
+[Slash3 Recover]  runs=773  med_frames=5  med_s=0.21
+   hazard%=100  med_speed=0.00  anim=[('Recover', 3201)]
+   -> [('Turn Anim', 396), ('Idle', 145), ('Counter Antic', 28)]
+
+[SmallShot Antic]  runs=1071  med_frames=9  med_s=0.42
+   hazard%=100  med_speed=0.00  anim=[('DartShoot Antic', 7187)]
+   -> [('SmallShot LowHigh', 741), ('Intro 1', 37), ('Idle', 36)]
+
+[SmallShot LowHigh]  runs=1118  med_frames=11  med_s=0.52
+   hazard%=100  med_speed=0.00  anim=[('DartShoot', 9553)]
+   -> [('SmallShot Recover', 703), ('Intro 1', 41), ('Idle', 32)]
+
+[SmallShot Recover]  runs=863  med_frames=5  med_s=0.21
+   hazard%=100  med_speed=0.00  anim=[('Recover', 3894)]
+   -> [('Idle', 662), ('Intro 1', 25), ('Slash1 Antic', 17)]
+
+[Stomp Antic]  runs=714  med_frames=5  med_s=0.21
+   hazard%=100  med_speed=0.00  anim=[('DStab Antic', 2730)]
+   -> [('Stomp Down', 497), ('Intro 1', 31), ('Idle', 22)]
+
+[Stomp Down]  runs=582  med_frames=2  med_s=0.05
+   hazard%=100  med_speed=85.59  anim=[('DStab Stomp', 1510)]
+   -> [('Plume Pause', 493), ('Intro 1', 14), ('Intro Roar', 9)]
+
+[Stomp Recover]  runs=573  med_frames=3  med_s=0.10
+   hazard%=100  med_speed=0.00  anim=[('Idle', 1608)]
+   -> [('Turn Anim', 248), ('Idle', 157), ('Evade Antic', 32)]
+
+[Stun]  runs=119  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Stun Land', 181)]
+   -> [('Intro 1', 18), ('Idle', 13), ('StunHitUp', 11)]
+
+[Stun Air]  runs=1  med_frames=18  med_s=0.62
+   hazard%=100  med_speed=41.38  anim=[('Stun Air', 18)]
+   -> [('Stun Fall', 1)]
+
+[Stun Fall]  runs=80  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('Stun Land', 276)]
+   -> [('Plume Pause', 14), ('Stun', 13), ('Intro 1', 8)]
+
+[StunHitUp]  runs=53  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('StunToIdle', 86)]
+   -> [('Idle', 12), ('Intro 1', 7), ('Slash1 Antic', 4)]
+
+[StunToIdle]  runs=4  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('StunToIdle', 4)]
+   -> [('Stomp Down', 2), ('Stomp Antic', 1), ('Plume Pause', 1)]
+
+[T2]  runs=16  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot', 23)]
+   -> [('T3', 4), ('Slash1 Antic', 3), ('Plume Up', 3)]
+
+[T3]  runs=17  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot', 28)]
+   -> [('Tendril Hit End', 4), ('SmallShot LowHigh', 3), ('Slash1 Antic', 3)]
+
+[Tele Cancel]  runs=85  med_frames=4  med_s=0.16
+   hazard%=30  med_speed=0.00  anim=[('Tele In', 302)]
+   -> [('SmallShot Antic', 42), ('Dash Antic', 33), ('Intro 5', 4)]
+
+[Tele In]  runs=1667  med_frames=4  med_s=0.16
+   hazard%=23  med_speed=0.00  anim=[('Tele In', 5486)]
+   -> [('SmallShot Antic', 561), ('Dash Antic', 368), ('Stomp Antic', 248)]
+
+[Tele Out]  runs=1760  med_frames=4  med_s=0.15
+   hazard%=24  med_speed=0.00  anim=[('Tele Out', 5669)]
+   -> [('Tele In', 1348), ('Tele Cancel', 77), ('Idle', 43)]
+
+[Tendril Antic]  runs=23  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot Antic', 40)]
+   -> [('Idle', 5), ('Plume Up', 4), ('Tele In', 4)]
+
+[Tendril Burst]  runs=63  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot', 116)]
+   -> [('Idle', 11), ('SmallShot Antic', 10), ('SmallShot LowHigh', 10)]
+
+[Tendril Hit]  runs=8  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot', 8)]
+   -> [('T2', 4), ('SmallShot Antic', 1), ('Slash1 Antic', 1)]
+
+[Tendril Hit End]  runs=24  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot', 40)]
+   -> [('SmallShot LowHigh', 5), ('Idle', 5), ('Counter Stance', 4)]
+
+[Tendril Recover]  runs=24  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot Recover', 40)]
+   -> [('Idle', 5), ('Counter Stance', 5), ('SmallShot Recover', 4)]
+
+[Tendril Start]  runs=11  med_frames=1  med_s=0.00
+   hazard%=100  med_speed=0.00  anim=[('SmallShot', 15)]
+   -> [('Tendril Hit', 4), ('SmallShot Antic', 2), ('Slash1 Antic', 2)]
+
+[Turn Anim]  runs=1460  med_frames=2  med_s=0.06
+   hazard%=100  med_speed=0.00  anim=[('Turn', 3859)]
+   -> [('Idle', 1021), ('Counter Antic', 106), ('Evade Antic', 97)]

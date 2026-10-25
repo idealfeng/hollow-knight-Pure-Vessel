@@ -177,6 +177,7 @@ _FSM_TO_MOVE = {
     "Stun Fall": PureVesselMove.STUN,
     "Stun Air": PureVesselMove.STUN,
     "StunHitUp": PureVesselMove.STUN,
+    "StunToIdle": PureVesselMove.STUN,
     "Evade Antic": PureVesselMove.EVADE,
     "Evade": PureVesselMove.EVADE,
     "EvadeRecover": PureVesselMove.EVADE,
@@ -187,6 +188,101 @@ def boss_move(state):
     """Return Pure Vessel's current move from the Control FSM state."""
     fsm_state = state.get("boss_control_state", "")
     return _FSM_TO_MOVE.get(fsm_state, PureVesselMove.NONE)
+
+
+class PureVesselPhase(IntEnum):
+    """Attack phase, keyed off the same Control FSM state (verified sequences)."""
+
+    NEUTRAL = 0
+    WINDUP = 1
+    ACTIVE = 2
+    RECOVERY = 3
+    STUN = 4
+    UNKNOWN = 5
+
+
+# Control FSM ActiveStateName -> phase, from the verified state sequences in the
+# diagnostic TSVs. States NOT listed here fall through to UNKNOWN (never guessed
+# as a specific attack phase).
+_FSM_TO_PHASE = {
+    "Slash1 Antic": PureVesselPhase.WINDUP,
+    "Slash1": PureVesselPhase.ACTIVE,
+    "Slash1 Recover": PureVesselPhase.RECOVERY,
+    "Slash2 Recover": PureVesselPhase.RECOVERY,
+    "Slash 2": PureVesselPhase.ACTIVE,
+    "Slash 3": PureVesselPhase.ACTIVE,
+    "Slash3 Recover": PureVesselPhase.RECOVERY,
+    "Dash Antic": PureVesselPhase.WINDUP,
+    "Dash": PureVesselPhase.ACTIVE,
+    "Dash Recover": PureVesselPhase.RECOVERY,
+    "SmallShot Antic": PureVesselPhase.WINDUP,
+    "SmallShot LowHigh": PureVesselPhase.ACTIVE,
+    "SmallShot Recover": PureVesselPhase.RECOVERY,
+    "Plume Up": PureVesselPhase.ACTIVE,
+    "Plume Pause": PureVesselPhase.ACTIVE,
+    "Burst Pause": PureVesselPhase.ACTIVE,
+    "Dstab Antic": PureVesselPhase.WINDUP,
+    "Dstab Jump": PureVesselPhase.ACTIVE,
+    "Dstab Air": PureVesselPhase.ACTIVE,
+    "Stomp Antic": PureVesselPhase.WINDUP,
+    "Stomp Down": PureVesselPhase.ACTIVE,
+    "Stomp Recover": PureVesselPhase.RECOVERY,
+    "Counter Stance": PureVesselPhase.WINDUP,
+    "Counter Antic": PureVesselPhase.WINDUP,
+    "Counter End": PureVesselPhase.ACTIVE,
+    "CS Antic": PureVesselPhase.WINDUP,
+    "CSlash": PureVesselPhase.ACTIVE,
+    "CSlash Recover": PureVesselPhase.RECOVERY,
+    "Ball Up": PureVesselPhase.WINDUP,
+    "Focus Charge": PureVesselPhase.WINDUP,
+    "Focus Wait": PureVesselPhase.WINDUP,
+    "Focus Burst": PureVesselPhase.ACTIVE,
+    "Hit End": PureVesselPhase.RECOVERY,
+    "Focus Recover": PureVesselPhase.RECOVERY,
+    "Tendril Antic": PureVesselPhase.UNKNOWN,
+    "Tendril Burst": PureVesselPhase.UNKNOWN,
+    "Tendril Start": PureVesselPhase.UNKNOWN,
+    "Tendril Hit": PureVesselPhase.UNKNOWN,
+    "T2": PureVesselPhase.UNKNOWN,
+    "T3": PureVesselPhase.UNKNOWN,
+    "Tendril Hit End": PureVesselPhase.UNKNOWN,
+    "Tendril Recover": PureVesselPhase.UNKNOWN,
+    "Tele Out": PureVesselPhase.NEUTRAL,
+    "Tele In": PureVesselPhase.NEUTRAL,
+    "Tele Cancel": PureVesselPhase.NEUTRAL,
+    "Stun": PureVesselPhase.STUN,
+    "Stun Fall": PureVesselPhase.STUN,
+    "Stun Air": PureVesselPhase.STUN,
+    "StunHitUp": PureVesselPhase.STUN,
+    "StunToIdle": PureVesselPhase.RECOVERY,
+    "Evade Antic": PureVesselPhase.WINDUP,
+    "Evade": PureVesselPhase.ACTIVE,
+    "EvadeRecover": PureVesselPhase.RECOVERY,
+    "Idle": PureVesselPhase.NEUTRAL,
+    "Turn Anim": PureVesselPhase.NEUTRAL,
+    "Recover": PureVesselPhase.RECOVERY,
+    "Pause": PureVesselPhase.NEUTRAL,
+    "Intro 1": PureVesselPhase.NEUTRAL,
+    "Intro 2": PureVesselPhase.NEUTRAL,
+    "Intro 3": PureVesselPhase.NEUTRAL,
+    "Intro 4": PureVesselPhase.NEUTRAL,
+    "Intro 5": PureVesselPhase.NEUTRAL,
+    "Intro 6": PureVesselPhase.NEUTRAL,
+    "Intro Roar": PureVesselPhase.NEUTRAL,
+    "Intro Roar End": PureVesselPhase.NEUTRAL,
+    "Intro Idle": PureVesselPhase.NEUTRAL,
+}
+
+
+def boss_phase(state):
+    """Return the attack phase from the Control FSM state.
+
+    Unknown/missing states map to UNKNOWN, never to a guessed attack phase.
+    """
+    fsm_state = state.get("boss_control_state", "")
+    if not fsm_state:
+        return PureVesselPhase.UNKNOWN
+    return _FSM_TO_PHASE.get(fsm_state, PureVesselPhase.UNKNOWN)
 
 
 def boss_attack(state):
@@ -213,20 +309,21 @@ def boss_attack(state):
 # ACTION_SIZES in main.py is derived from these lengths, so adding an entry
 # here is enough to widen the corresponding head.
 
+# move/look heads have no do_nothing: every step explicitly sets the held key
+# state (left/right/up/down), and stop releases it. do_nothing remains only on
+# the instantaneous heads (attack/dash/jump) where "decline to act" is clear.
 movement_actions = {
     0: movement.move_left,
     1: movement.move_right,
     2: movement.stop,
     3: movement.turn_left,
     4: movement.turn_right,
-    5: do_nothing,
 }
 
 look_actions = {
     0: look.look_up,
     1: look.look_down,
     2: look.stop_looking,
-    3: do_nothing,
 }
 
 attack_actions = {

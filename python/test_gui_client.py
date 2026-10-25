@@ -62,7 +62,7 @@ EPISODE_TIME_LIMIT = 120.0
 GROUP_LABELS = ["move", "look", "attack", "dash", "jump"]
 ACTION_GROUPS = [movement_actions, look_actions, attack_actions,
                   dash_actions, jump_actions]
-ACTION_SIZES = [len(g) for g in ACTION_GROUPS]   # [6, 4, 2, 2, 3]
+ACTION_SIZES = [len(g) for g in ACTION_GROUPS]   # [5, 3, 2, 2, 3]
 
 def _fn_name(fn):
     """Human-readable name for a dispatch entry - unwraps functools.partial
