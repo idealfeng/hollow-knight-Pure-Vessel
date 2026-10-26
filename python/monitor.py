@@ -11,12 +11,8 @@ from matplotlib.figure import Figure
 AVG_WINDOW = 20
 MIN_SAVE_INTERVAL = 5.0  # seconds between history writes to disk
 
-# ppo_model.evaluate() SUMS entropy across the independent action heads, so the
-# ceiling is sum(ln(n)) over the head sizes - not ln(8), which was the old
-# single-8-action-space value and is far below the real maximum (5.11 for
-# [5,3,2,2,3] after move/look lost their do_nothing). Drawn as "max (uniform)"
-# on the entropy plot, so a stale value makes a healthy policy look off the chart.
-DEFAULT_ACTION_SIZES = [5, 3, 2, 2, 3]
+# The current policy is one 12-way macro-action head.
+DEFAULT_ACTION_SIZES = [12]
 
 
 def max_entropy(action_sizes):
@@ -51,11 +47,12 @@ def _rolling_average(values, window):
 
 class TrainingMonitor:
 
-    def __init__(self, target_kl=0.03, action_sizes=None):
+    def __init__(self, target_kl=0.03, action_sizes=None, action_labels=None):
 
         self.target_kl = target_kl
         self.action_sizes = action_sizes or DEFAULT_ACTION_SIZES
         self.num_heads = len(self.action_sizes)
+        self.action_labels = action_labels or [f"h{i}" for i in range(self.num_heads)]
         self.max_entropy = max_entropy(self.action_sizes)
 
         self.root = tk.Tk()
@@ -66,6 +63,10 @@ class TrainingMonitor:
         self.steps = []
         self.hits = []
         self.damages = []
+        self.misses = []
+        self.staggers = []
+        self.min_boss_hps = []
+        self.wins = []
 
         # per-update series (one point per ppo_update() call)
         self.policy_losses = []
@@ -215,6 +216,13 @@ class TrainingMonitor:
             print(f"monitor: could not load history ({exc}), starting fresh")
             return
 
+        # Episode diagnostics added with the macro-action curriculum. Older
+        # histories remain readable and simply have no points for these rows.
+        self.misses = data["misses"].tolist() if "misses" in data else []
+        self.staggers = data["staggers"].tolist() if "staggers" in data else []
+        self.min_boss_hps = data["min_boss_hps"].tolist() if "min_boss_hps" in data else []
+        self.wins = data["wins"].tolist() if "wins" in data else []
+
         # Per-head/grad-norm fields are newer than the fields above. A history
         # file saved before they existed simply won't have these keys - that
         # must NOT blow away the legacy fields already loaded successfully
@@ -240,6 +248,10 @@ class TrainingMonitor:
                 steps=np.array(self.steps, dtype=np.int32),
                 hits=np.array(self.hits, dtype=np.int32),
                 damages=np.array(self.damages, dtype=np.int32),
+                misses=np.array(self.misses, dtype=np.int32),
+                staggers=np.array(self.staggers, dtype=np.int32),
+                min_boss_hps=np.array(self.min_boss_hps, dtype=np.int32),
+                wins=np.array(self.wins, dtype=bool),
                 policy_losses=np.array(self.policy_losses, dtype=np.float32),
                 value_losses=np.array(self.value_losses, dtype=np.float32),
                 entropies=np.array(self.entropies, dtype=np.float32),
@@ -450,10 +462,13 @@ class TrainingMonitor:
         latest_steps = self.steps[-1] if self.steps else 0
         latest_hits = self.hits[-1] if self.hits else 0
         latest_damage = self.damages[-1] if self.damages else 0
+        latest_misses = self.misses[-1] if self.misses else 0
+        latest_staggers = self.staggers[-1] if self.staggers else 0
 
         status = (
             f"Episode: {episode}   Reward: {latest_reward:.2f}   "
-            f"Steps: {latest_steps}   Hits: {latest_hits}   Damage: {latest_damage}"
+            f"Steps: {latest_steps}   Hits: {latest_hits}   Damage: {latest_damage}   "
+            f"Miss: {latest_misses}   Stagger: {latest_staggers}"
         )
         self.status_label.config(text=status)
 
@@ -503,6 +518,12 @@ class TrainingMonitor:
                     f"policy nearly deterministic (H {self.entropies[-1]:.2f} "
                     f"of max {self.max_entropy:.2f})"
                 )
+            # 50 rollouts = 102,400 transitions with the current 2048-step
+            # buffer. This is the pilot-run stop gate: do not burn another
+            # night if no recent episode has even reached the first stagger.
+            if (update_count >= 50 and len(self.staggers) >= AVG_WINDOW
+                    and not any(value > 0 for value in self.staggers[-AVG_WINDOW:])):
+                warnings.append("100k+ steps but no stagger in last 20 episodes")
 
         self.warning_label.config(text=("  |  ".join(warnings)))
 
@@ -525,6 +546,21 @@ class TrainingMonitor:
             lines.append(f"Best episode reward:  {max(self.rewards):.2f}")
             window = min(AVG_WINDOW, len(self.rewards))
             lines.append(f"Recent avg reward:    {sum(self.rewards[-window:]) / window:.2f}")
+        if self.wins:
+            window = min(AVG_WINDOW, len(self.wins))
+            lines.append(f"Recent win rate:      {sum(self.wins[-window:]) / window:.1%}")
+        if self.staggers:
+            window = min(AVG_WINDOW, len(self.staggers))
+            reached = sum(value > 0 for value in self.staggers[-window:])
+            lines.append(f"First-stagger rate:   {reached / window:.1%}")
+        if self.min_boss_hps:
+            window = min(AVG_WINDOW, len(self.min_boss_hps))
+            lines.append(
+                f"Recent min boss HP:    {sum(self.min_boss_hps[-window:]) / window:.1f}"
+            )
+        if self.misses:
+            window = min(AVG_WINDOW, len(self.misses))
+            lines.append(f"Recent avg misses:    {sum(self.misses[-window:]) / window:.1f}")
         if self.stopped_earlys:
             early_rate = sum(self.stopped_earlys) / len(self.stopped_earlys)
             lines.append(f"Early-stop rate:      {early_rate:.1%}")
@@ -537,9 +573,7 @@ class TrainingMonitor:
             lines.append(" never an action head - so a spike shows up here)")
 
         if self.entropy_per_head:
-            labels = (["move", "look", "atk", "dash", "jump"]
-                      if self.num_heads == 5 else
-                      [f"h{i}" for i in range(self.num_heads)])
+            labels = self.action_labels
             e = self.entropy_per_head[-1]
             k = self.approx_kl_per_head[-1]
             c = self.clipfrac_per_head[-1]
@@ -558,7 +592,8 @@ class TrainingMonitor:
             va="top", ha="left", fontsize=9, family="monospace",
         )
 
-    def add_reward(self, reward, steps=None, hits=None, damage=None):
+    def add_reward(self, reward, steps=None, hits=None, damage=None,
+                   misses=None, staggers=None, min_boss_hp=None, won=None):
         self.rewards.append(reward)
         if steps is not None:
             self.steps.append(steps)
@@ -566,6 +601,14 @@ class TrainingMonitor:
             self.hits.append(hits)
         if damage is not None:
             self.damages.append(damage)
+        if misses is not None:
+            self.misses.append(misses)
+        if staggers is not None:
+            self.staggers.append(staggers)
+        if min_boss_hp is not None:
+            self.min_boss_hps.append(min_boss_hp)
+        if won is not None:
+            self.wins.append(bool(won))
         self._save_history_throttled()
 
     def add_update(self, stats):

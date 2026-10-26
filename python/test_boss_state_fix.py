@@ -27,6 +27,7 @@ def make_state(boss_health, knight_health=9, hit_streak=0, boss_control_state="I
         "boss_velocity": (0.0, 0.0),
         "boss_box": (51.0, 8.0, 53.0, 10.0),
         "boss_control_state": boss_control_state,
+        "boss_state_age": 0.0,
         "knight_facing_right": True,
         "knight_velocity": (0.0, 0.0),
         "attacking": False,
@@ -65,30 +66,30 @@ print("== calculate_reward ==")
 # 1. Boss temporarily missing, not defeated: 1000 -> -1 (done, as a truncation).
 r, bd = calculate_reward(make_state(1000), make_state(-1), done=True, return_breakdown=True)
 labs = labels(bd)
-check("1. missing boss: no hit landed", "hit landed" not in labs)
+check("1. missing boss: no boss damage", "boss damage" not in labs)
 check("1b. missing boss: no boss defeated", "boss defeated" not in labs)
 check("1c. missing boss: no stagger", not any("stagger" in l for l in labs))
 
 # 2. Boss alive, hp dropping: 1600 -> 1567.
 r, bd = calculate_reward(make_state(1600), make_state(1567, hit_streak=1), done=False, return_breakdown=True)
 labs = labels(bd)
-check("2. hp drop -> hit landed", "hit landed" in labs)
+check("2. hp drop -> boss damage", "boss damage" in labs)
 
 # 3. Boss hp reaching a real 0: 100 -> 0, done.
 r, bd = calculate_reward(make_state(100), make_state(0), done=True, return_breakdown=True)
 labs = labels(bd)
 check("3. real defeat -> boss defeated", "boss defeated" in labs)
-check("3b. real defeat -> hit landed", "hit landed" in labs)
+check("3b. real defeat -> boss damage", "boss damage" in labs)
 
 # 4. Boss missing then reappearing: -1 -> 1600 (no hit on recovery).
 r, bd = calculate_reward(make_state(-1), make_state(1600), done=False, return_breakdown=True)
 labs = labels(bd)
-check("4. reappear: no hit landed", "hit landed" not in labs)
+check("4. reappear: no boss damage", "boss damage" not in labs)
 
 # 5. Episode reset with a fresh boss: 1600 -> 1600 (no change, no hit).
 r, bd = calculate_reward(make_state(1600), make_state(1600), done=False, return_breakdown=True)
 labs = labels(bd)
-check("5. reset no-change: no hit landed", "hit landed" not in labs)
+check("5. reset no-change: no boss damage", "boss damage" not in labs)
 
 # 6. The real live sequence was 16 -> object disappears. C# now latches that
 # disappearance as hp=0 while the knight is alive, so Python must pay both the
@@ -96,7 +97,7 @@ check("5. reset no-change: no hit landed", "hit landed" not in labs)
 r, bd = calculate_reward(make_state(16, hit_streak=4), make_state(0, hit_streak=5), done=True,
                          return_breakdown=True)
 labs = labels(bd)
-check("6. latched 16 -> 0: final hit", "hit landed" in labs)
+check("6. latched 16 -> 0: final hit", "boss damage" in labs)
 check("6b. latched 16 -> 0: boss defeated", "boss defeated" in labs)
 
 r, bd = calculate_reward(make_state(0), make_state(0), done=True,
@@ -132,8 +133,8 @@ check("9b. death penalty is not repeated", "die" not in labels(bd))
 # catches the previous bug where TCP parsed it but get_state() dropped it.
 move_state = make_state(1600, boss_control_state="Tendril Hit")
 vector = state_to_vector(move_state)
-move_start = 43
-check("10. observation width", len(vector) == OBSERVATION_SIZE == 119)
+move_start = 44
+check("10. observation width", len(vector) == OBSERVATION_SIZE == 126)
 check("10b. Tendril FSM reaches one-hot",
       vector[move_start + int(PureVesselMove.TENDRIL)] == 1
       and sum(vector[move_start:move_start + len(PureVesselMove)]) == 1)

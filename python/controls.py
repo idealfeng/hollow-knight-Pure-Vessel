@@ -1,8 +1,9 @@
+import os
 import socket
 import threading
 
-HOST = "127.0.0.1"
-PORT = 9000
+HOST = os.environ.get("HOLLOWRL_HOST", "127.0.0.1")
+PORT = int(os.environ.get("HOLLOWRL_PORT", "9000"))
 SOCKET_TIMEOUT = 2.0
 
 # How long a plain press holds the action down. pyautogui.press() was too fast

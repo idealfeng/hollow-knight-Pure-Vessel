@@ -21,7 +21,7 @@ FEATURE_NAMES = [
     "boss_present", "boss_health", "boss_dx", "boss_dy",
     "boss_rel_vel_x", "boss_rel_vel_y", "boss_width", "boss_height",
     "boss_facing_left", "boss_faces_knight", "knight_faces_boss",
-    "hit_count", "damage_count", "time_frac",
+    "hit_count", "damage_count", "time_frac", "boss_state_age",
     "hazard_count", "nearest_hazard_edge_distance",
     "nearest_left", "nearest_right", "nearest_above", "nearest_below",
     "attack_active",

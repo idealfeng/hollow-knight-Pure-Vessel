@@ -78,20 +78,42 @@ public class HollowRL : BaseUnityPlugin
     private int diagnosticBossId = int.MinValue;
     private Component[] diagnosticComponents = new Component[0];
 
+    private int ResolvePort()
+    {
+        const int fallback = 9000;
+        string raw = Environment.GetEnvironmentVariable("HOLLOWRL_PORT");
+        int port;
+        if (!string.IsNullOrEmpty(raw) && int.TryParse(raw, out port)
+                && port >= 1024 && port <= 65535)
+            return port;
+
+        foreach (string arg in Environment.GetCommandLineArgs())
+        {
+            const string prefix = "--hollowrl-port=";
+            if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(arg.Substring(prefix.Length), out port)
+                    && port >= 1024 && port <= 65535)
+                return port;
+        }
+
+        return fallback;
+    }
+
     private void Awake()
     {
         Harmony.CreateAndPatchAll(typeof(HollowRL));
 
         knightPos = gameObject.AddComponent<KnightPos.DiagnosticsOverlay>();
 
-        server = new TcpListener(IPAddress.Loopback, 9000);
+        int port = ResolvePort();
+        server = new TcpListener(IPAddress.Loopback, port);
         server.Start();
 
         serverThread = new Thread(ServerLoop);
         serverThread.IsBackground = true;
         serverThread.Start();
 
-        Logger.LogInfo("TCP server started");
+        Logger.LogInfo("TCP server started on 127.0.0.1:" + port);
     }
 
 

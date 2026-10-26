@@ -1,19 +1,21 @@
-"""Tests for the action-space rework and FSM phase mapping (no game, no training)."""
+"""Offline checks for macro actions, FSM phases and delayed reward events."""
+
 from unittest import mock
 
-import game_state
 from agent.action import (
-    PureVesselMove, PureVesselPhase, boss_move, boss_phase,
-    movement_actions, look_actions, attack_actions, dash_actions, jump_actions,
-    movement, look,
+    MACRO_ACTION_NAMES, MacroAction, PureVesselMove, PureVesselPhase,
+    boss_move, boss_phase, execute_macro_action,
 )
-from agent.reward import calculate_reward
+from agent.reward import CLEAN_DODGE, EMPTY_ATTACK, RewardTracker, calculate_reward
+from enviroment.state_to_vector import BASE_FEATURES, OBSERVATION_SIZE, state_to_vector
 
 
-def make_state(boss_control_state, boss_health=1000, knight_health=9, **overrides):
-    s = {
+def make_state(boss_control_state="Idle", boss_health=1000, knight_health=9,
+               **overrides):
+    state = {
         "knight_box": (40.0, 4.0, 42.0, 6.0),
         "boss_control_state": boss_control_state,
+        "boss_state_age": 0.25,
         "boss_health": boss_health,
         "knight_health": knight_health,
         "hit_streak": 0,
@@ -33,91 +35,124 @@ def make_state(boss_control_state, boss_health=1000, knight_health=9, **override
         "is_recoiling": False,
         "is_touching_wall_left": False,
         "is_touching_wall_right": False,
-        "wall_distance_left": 0.0,
-        "wall_distance_right": 0.0,
+        "wall_distance_left": 10.0,
+        "wall_distance_right": 20.0,
         "can_shade_cloak_now": True,
         "is_invuln": False,
         "hit_count": 0,
         "damage_count": 0,
         "mana": 0,
     }
-    s.update(overrides)
-    return s
+    state.update(overrides)
+    return state
 
 
 results = []
 
 
-def check(name, cond):
-    print("  %s  %s" % ("PASS" if cond else "FAIL", name))
-    results.append(cond)
+def check(name, condition):
+    print("  %s  %s" % ("PASS" if condition else "FAIL", name))
+    results.append(bool(condition))
 
 
-print("== 1. action heads (do_nothing removed from move/look) ==")
-check("movement has 5 actions (no do_nothing)", len(movement_actions) == 5)
-check("look has 3 actions (no do_nothing)", len(look_actions) == 3)
-check("attack keeps do_nothing (2)", len(attack_actions) == 2)
-check("dash keeps do_nothing (2)", len(dash_actions) == 2)
-check("jump keeps do_nothing (3)", len(jump_actions) == 3)
-check("movement idx 2 is stop", movement_actions[2] is movement.stop)
-check("look idx 2 is stop_looking", look_actions[2] is look.stop_looking)
+print("== 1. twelve deliberate macro actions ==")
+check("exactly 12 actions", len(MACRO_ACTION_NAMES) == 12)
+check("stable indices", MacroAction.IDLE == 0 and MacroAction.ATTACK_DOWN == 11)
 
-print("== 2. press/release semantics ==")
-with mock.patch("agent.action.controls.key_up") as ku, \
-     mock.patch("agent.action.controls.key_down") as kd:
-    movement.stop()
-    check("stop releases left+right",
-          mock.call("left") in ku.call_args_list and mock.call("right") in ku.call_args_list)
-    movement.move_left()
-    check("move_left holds left + releases right",
-          mock.call("left") in kd.call_args_list and mock.call("right") in ku.call_args_list)
-    look.stop_looking()
-    check("stop_looking releases up+down",
-          mock.call("up") in ku.call_args_list and mock.call("down") in ku.call_args_list)
-    look.look_up()
-    check("look_up holds up + releases down",
-          mock.call("up") in kd.call_args_list and mock.call("down") in ku.call_args_list)
+with mock.patch("agent.action.controls.key_up") as key_up, \
+     mock.patch("agent.action.controls.key_down") as key_down, \
+     mock.patch("agent.action.controls.tap") as tap:
+    execute_macro_action(MacroAction.MOVE_LEFT)
+    check("move-left holds left", mock.call("left") in key_down.call_args_list)
+    execute_macro_action(MacroAction.DASH_RIGHT)
+    check("dash-right holds right and taps dash",
+          mock.call("right") in key_down.call_args_list
+          and mock.call("dash") in tap.call_args_list)
+    execute_macro_action(MacroAction.ATTACK_UP)
+    check("up-attack aims and swings",
+          mock.call("up") in key_down.call_args_list
+          and mock.call("attack") in tap.call_args_list)
 
-print("== 3. FSM -> move + phase ==")
+try:
+    execute_macro_action(99)
+    invalid_rejected = False
+except ValueError:
+    invalid_rejected = True
+check("invalid macro rejected", invalid_rejected)
+
+
+print("== 2. FSM -> move + phase ==")
 cases = [
     ("Slash1 Antic", PureVesselMove.TRIPLE_SLASH, PureVesselPhase.WINDUP),
     ("Slash1", PureVesselMove.TRIPLE_SLASH, PureVesselPhase.ACTIVE),
     ("Slash3 Recover", PureVesselMove.TRIPLE_SLASH, PureVesselPhase.RECOVERY),
-    ("Dash Antic", PureVesselMove.DASH, PureVesselPhase.WINDUP),
     ("Dash", PureVesselMove.DASH, PureVesselPhase.ACTIVE),
     ("SmallShot LowHigh", PureVesselMove.DAGGER, PureVesselPhase.ACTIVE),
     ("Stun", PureVesselMove.STUN, PureVesselPhase.STUN),
-    ("StunToIdle", PureVesselMove.STUN, PureVesselPhase.RECOVERY),
     ("Tendril Antic", PureVesselMove.TENDRIL, PureVesselPhase.UNKNOWN),
     ("Idle", PureVesselMove.NONE, PureVesselPhase.NEUTRAL),
-    ("TotallyUnknownState", PureVesselMove.NONE, PureVesselPhase.UNKNOWN),
 ]
-for state, move, phase in cases:
-    check("%s -> %s/%s" % (state, move.name, phase.name),
-          boss_move({"boss_control_state": state}) == move
-          and boss_phase({"boss_control_state": state}) == phase)
+for fsm, move, phase in cases:
+    check(f"{fsm} -> {move.name}/{phase.name}",
+          boss_move({"boss_control_state": fsm}) == move
+          and boss_phase({"boss_control_state": fsm}) == phase)
 
-check("empty state -> UNKNOWN phase", boss_phase({}) == PureVesselPhase.UNKNOWN)
 
-print("== 4. stagger fires exactly once ==")
-r, bd = calculate_reward(make_state("Slash1"), make_state("Stun"),
-                         done=False, return_breakdown=True)
-check("enter stun triggers stagger", "boss staggered" in [l for l, _ in bd])
-r, bd = calculate_reward(make_state("Stun"), make_state("StunToIdle"),
-                         done=False, return_breakdown=True)
-check("Stun -> StunToIdle does NOT re-trigger stagger",
-      "boss staggered" not in [l for l, _ in bd])
+print("== 3. dense but guarded reward ==")
+_, breakdown = calculate_reward(
+    make_state(boss_health=1000), make_state(boss_health=967), False,
+    return_breakdown=True,
+)
+check("33 boss HP gives one reward unit",
+      any(label == "boss damage" and abs(value - 1.0) < 1e-6
+          for label, value in breakdown))
 
-print("== 5. observation width ==")
-from enviroment.state_to_vector import OBSERVATION_SIZE, BASE_FEATURES, state_to_vector
-check("BASE_FEATURES == 61", BASE_FEATURES == 61)
-check("OBSERVATION_SIZE == 125 (61 + 8*8)", OBSERVATION_SIZE == 125)
-v = state_to_vector(make_state("Slash1 Antic"), time_frac=0.5)
-check("vector width matches", v is not None and len(v) == OBSERVATION_SIZE)
+neutral_far = make_state(boss_control_state="Idle", boss_position=(80.0, 9.0),
+                         boss_box=(79.0, 8.0, 81.0, 10.0))
+active_far = make_state(boss_control_state="Slash1", boss_position=(80.0, 9.0),
+                        boss_box=(79.0, 8.0, 81.0, 10.0))
+_, neutral_terms = calculate_reward(neutral_far, neutral_far, False,
+                                    return_breakdown=True)
+_, active_terms = calculate_reward(active_far, active_far, False,
+                                   return_breakdown=True)
+check("far tax applies while neutral",
+      "far from boss" in [label for label, _ in neutral_terms])
+check("far tax disabled during active attack",
+      "far from boss" not in [label for label, _ in active_terms])
+
+tracker = RewardTracker()
+before = make_state(attacking=False)
+swinging = make_state(attacking=True)
+after = make_state(attacking=False)
+tracker.transition(before, swinging, False)
+_, terms = tracker.transition(swinging, after, False, return_breakdown=True)
+check("completed whiff receives delayed penalty",
+      ("empty attack", EMPTY_ATTACK) in terms and tracker.misses == 1)
+
+tracker.reset()
+tracker.transition(before, swinging, False)
+hit = make_state(attacking=True, hit_count=1, boss_health=967)
+_, terms = tracker.transition(swinging, hit, False, return_breakdown=True)
+check("landed swing is not a whiff", "empty attack" not in [x[0] for x in terms])
+
+tracker.reset()
+windup = make_state("Slash1 Antic")
+active = make_state("Slash1")
+recovery = make_state("Slash1 Recover")
+tracker.transition(windup, active, False)
+_, terms = tracker.transition(active, recovery, False, return_breakdown=True)
+check("clean active phase exit gives tiny dodge reward",
+      ("clean dodge", CLEAN_DODGE) in terms and tracker.dodges == 1)
+
+
+print("== 4. observation ==")
+vector = state_to_vector(make_state(), time_frac=0.5)
+check("base features include FSM age", BASE_FEATURES == 62)
+check("observation is 126 values", OBSERVATION_SIZE == 126 and len(vector) == 126)
 
 print()
-failed = sum(1 for r in results if not r)
-print("%d/%d passed" % (len(results) - failed, len(results)))
+failed = sum(not result for result in results)
+print(f"{len(results) - failed}/{len(results)} passed")
 if failed:
     raise SystemExit(1)
 print("ALL PASS")

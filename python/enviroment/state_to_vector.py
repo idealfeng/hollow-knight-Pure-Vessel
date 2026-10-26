@@ -9,7 +9,7 @@ game_reader.start()
 
 TRACKED_HAZARDS = 8
 HAZARD_FEATURES = 8
-BASE_FEATURES = 61
+BASE_FEATURES = 62
 OBSERVATION_SIZE = BASE_FEATURES + TRACKED_HAZARDS * HAZARD_FEATURES
 MAX_OFFSET = 50.0
 NO_HAZARD_DISTANCE = 50.0
@@ -154,6 +154,7 @@ def get_state():
         "boss_position": game_reader.boss_position,
         "boss_box": game_reader.boss_box,
         "boss_control_state": game_reader.boss_control_state,
+        "boss_state_age": game_reader.boss_state_age,
         "wall_distance_left": game_reader.wall_distance_left,
         "wall_distance_right": game_reader.wall_distance_right,
         "knight_health": game_reader.knight_health,
@@ -171,7 +172,7 @@ def get_state():
 
 
 def state_to_vector(state, time_frac=0.0):
-    """Build the 119-feature, mostly knight-relative Pure Vessel state."""
+    """Build the 126-feature, mostly knight-relative Pure Vessel state."""
     knight_box = state["knight_box"]
     if knight_box is None:
         return None
@@ -228,6 +229,7 @@ def state_to_vector(state, time_frac=0.0):
 
         # Fight progress.
         state["hit_count"], state["damage_count"], time_frac,
+        min(max(state.get("boss_state_age", 0.0), 0.0), 5.0),
 
         # Global hazard summary.
         len(hazards), nearest,

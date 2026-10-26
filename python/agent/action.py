@@ -9,8 +9,6 @@ Two halves:
 """
 
 from enum import IntEnum
-from functools import partial
-
 import controls
 import game_state
 class movement:
@@ -299,45 +297,128 @@ def boss_attack(state):
 
 
 # ======================================================================
-# ACTION GROUPS
+# MACRO ACTIONS
 #
-# One dispatch table per independent action head. main.py samples one index
-# from each and calls the matching entry, so a step can move, aim, attack,
-# dash and jump all at once. The indices are what the policy learns - keep
-# them stable or existing checkpoints become meaningless.
-#
-# ACTION_SIZES in main.py is derived from these lengths, so adding an entry
-# here is enough to widen the corresponding head.
+# Independent move/look/attack/dash/jump heads compacted the network output,
+# but still explored 5*3*2*2*3 = 180 joint button combinations.  Many were
+# contradictory or physically impossible.  One categorical head now chooses
+# a deliberate option; useful combinations such as "jump left" stay explicit.
 
-# move/look heads have no do_nothing: every step explicitly sets the held key
-# state (left/right/up/down), and stop releases it. do_nothing remains only on
-# the instantaneous heads (attack/dash/jump) where "decline to act" is clear.
-movement_actions = {
-    0: movement.move_left,
-    1: movement.move_right,
-    2: movement.stop,
-    3: movement.turn_left,
-    4: movement.turn_right,
+
+class MacroAction(IntEnum):
+    IDLE = 0
+    MOVE_LEFT = 1
+    MOVE_RIGHT = 2
+    DASH_LEFT = 3
+    DASH_RIGHT = 4
+    JUMP = 5
+    JUMP_LEFT = 6
+    JUMP_RIGHT = 7
+    ATTACK_LEFT = 8
+    ATTACK_RIGHT = 9
+    ATTACK_UP = 10
+    ATTACK_DOWN = 11
+
+
+def _idle():
+    movement.stop()
+    look.stop_looking()
+
+
+def _move_left():
+    look.stop_looking()
+    movement.move_left()
+
+
+def _move_right():
+    look.stop_looking()
+    movement.move_right()
+
+
+def _dash_left():
+    _move_left()
+    dash()
+
+
+def _dash_right():
+    _move_right()
+    dash()
+
+
+def _jump_neutral():
+    _idle()
+    jump(duration=0.4)
+
+
+def _jump_left():
+    _move_left()
+    jump(duration=0.4)
+
+
+def _jump_right():
+    _move_right()
+    jump(duration=0.4)
+
+
+def _attack_left():
+    _idle()
+    movement.turn_left()
+    swing_nail()
+
+
+def _attack_right():
+    _idle()
+    movement.turn_right()
+    swing_nail()
+
+
+def _attack_up():
+    movement.stop()
+    look.look_up()
+    swing_nail()
+
+
+def _attack_down():
+    movement.stop()
+    look.look_down()
+    swing_nail()
+
+
+macro_actions = {
+    MacroAction.IDLE: _idle,
+    MacroAction.MOVE_LEFT: _move_left,
+    MacroAction.MOVE_RIGHT: _move_right,
+    MacroAction.DASH_LEFT: _dash_left,
+    MacroAction.DASH_RIGHT: _dash_right,
+    MacroAction.JUMP: _jump_neutral,
+    MacroAction.JUMP_LEFT: _jump_left,
+    MacroAction.JUMP_RIGHT: _jump_right,
+    MacroAction.ATTACK_LEFT: _attack_left,
+    MacroAction.ATTACK_RIGHT: _attack_right,
+    MacroAction.ATTACK_UP: _attack_up,
+    MacroAction.ATTACK_DOWN: _attack_down,
 }
 
-look_actions = {
-    0: look.look_up,
-    1: look.look_down,
-    2: look.stop_looking,
-}
+MACRO_ACTION_NAMES = tuple(action.name.lower() for action in MacroAction)
+ATTACK_MACRO_ACTIONS = frozenset({
+    MacroAction.ATTACK_LEFT,
+    MacroAction.ATTACK_RIGHT,
+    MacroAction.ATTACK_UP,
+    MacroAction.ATTACK_DOWN,
+})
 
-attack_actions = {
-    0: swing_nail,
-    1: do_nothing,
-}
 
-dash_actions = {
-    0: dash,
-    1: do_nothing,
-}
+def execute_macro_action(action):
+    """Execute one policy option and fail loudly on an invalid index."""
+    try:
+        action = MacroAction(int(action))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid macro action {action!r}") from exc
+    macro_actions[action]()
 
-jump_actions = {
-    0: partial(jump, duration=0.1),   # short hop
-    1: partial(jump, duration=0.4),   # long jump
-    2: do_nothing,
-}
+
+def is_attack_action(action):
+    try:
+        return MacroAction(int(action)) in ATTACK_MACRO_ACTIONS
+    except (TypeError, ValueError):
+        return False

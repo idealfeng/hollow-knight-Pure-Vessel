@@ -6,7 +6,7 @@ trained with PPO against the live game.
 There is no emulator, no screen scraping and no fake keystrokes. A BepInEx mod
 loaded inside the game exposes the fight as a structured state feed and accepts
 input commands over a loopback TCP socket; a Python trainer on the other end
-reads that state at 15 Hz, samples an action from a policy network, and sends the
+reads that state at 10 Hz, samples a macro action from a policy network, and sends the
 resulting button presses back into the game process.
 
 ```
@@ -34,8 +34,8 @@ have open.
 **Contents:** [Repository layout](#repository-layout) ·
 [Setup](#setup) · [Running](#running) ·
 [How an episode runs](#how-an-episode-runs) ·
-[Observations](#observation-space--44-features) ·
-[Actions](#action-space--five-independent-heads) ·
+[Observations](#observation-space--126-base-features-four-frame-stack) ·
+[Actions](#action-space--one-12-way-macro-head) ·
 [Reward](#reward-function) · [PPO configuration](#ppo-configuration) ·
 [Wire protocol](#wire-protocol) · [Files a run produces](#files-a-run-produces) ·
 [Known rough edges](#known-rough-edges)
@@ -55,14 +55,15 @@ python/
   main.py              Training entry point: rollout loop + PPO updates + monitor
   game_state.py        Background thread polling the mod, exposed as module globals
   controls.py          Input command client (KD / KU / TAP / CLEAR / KILL)
-  ppo_model.py         Shared-trunk actor-critic with five independent action heads
+  hollow_knight_env.py Gymnasium Env, reset/step contract and four-frame stack
+  ppo_model.py         Shared-trunk actor-critic with one 12-way action head
   ppo_training.py      GAE + clipped surrogate objective + diagnostics
   rollout_buffer.py    Fixed-size rollout storage and GAE computation
   obs_norm.py          Running mean/variance observation normaliser
   monitor.py           Live 3x3 training dashboard (Tk + matplotlib)
   test_gui_client.py   Live game/reward/policy inspector, usable while you play
-  state_vector_viewer.py  Bare listing of the 44 observation features, live
-  agent/               action.py (action groups), reward.py, calc.py (box geometry)
+  state_vector_viewer.py  Bare listing of the 126 base observation features
+  agent/               action.py (macro actions), reward.py, calc.py (box geometry)
   enviroment/          state_to_vector.py (observation + is_done), reset.py (episode reset)
 
 BepInEx/              Bundled BepInEx 5 (x64) — copy its contents into the game folder
@@ -249,14 +250,14 @@ on it.
 1. `reset_environment()` releases every key, waits out the death sequence, then
    navigates the retry menu (`left`, `up`, `submit`) and waits for a live, stable
    fight state — retrying up to four times before giving up with a message.
-2. The control loop runs at **15 Hz**. Each step reads the current state, samples
-   one action from each of the five heads, dispatches them, sleeps `1/15 s`
+2. The control loop runs at **10 Hz**. Each step reads the current state, samples
+   one of 12 deliberate macro actions, dispatches it, sleeps `1/10 s`
    scaled by game speed, then reads the next state and computes the reward.
 3. An episode ends when the boss's health reaches 0, when the knight dies, or at
    the **60 s cap** — at which point the trainer sends `KILL` rather than letting
    the fight run on. A capped ending is flagged as `timed_out`, which suppresses
    the death and time penalties so a scheduled ending costs nothing.
-4. Every **2048 steps** (~136 s of play, roughly two full-length episodes) the
+4. Every **2048 steps** (~205 s of play) the
    rollout closes, keys are released, and PPO runs for 4 epochs over the batch.
 
 Losing contact with the state feed mid-rollout is treated as a truncation, so the
@@ -264,7 +265,7 @@ advantage chain is cut cleanly instead of splicing two unrelated moments togethe
 
 ---
 
-## Observation space — 119 features
+## Observation space — 126 base features, four-frame stack
 
 Built by `enviroment.state_to_vector()`, normalised by a running mean/variance
 estimator (`obs_norm.py`) that clips to ±10 sigma. All boxes are
@@ -275,43 +276,32 @@ estimator (`obs_norm.py`) that clips to ±10 sigma. All boxes are
 | Knight body | health/mana, facing, velocity, action flags, grounded/wall contact, and left/right wall distance (17) |
 | Nail hitbox | `attack_dx/dy/width/height`, `attack_present` — knight-relative (5) |
 | Boss | `boss_present`, `boss_health`, `boss_dx/dy`, `boss_rel_vel_x/y`, `boss_width/height`, `boss_facing_left`, `boss_faces_knight`, `knight_faces_boss` (11) |
-| Fight progress | `hit_count`, `damage_count`, `time_frac` (3) |
+| Fight progress | `hit_count`, `damage_count`, `time_frac`, current FSM-state age (4) |
 | Hazard summary | `hazard_count`, `nearest_edge_distance`, 4 directional gaps, `attack_active` (7) |
 | Move one-hot | 12 Pure Vessel moves from the Control FSM state (12) |
+| Phase one-hot | neutral, windup, active, recovery, stun, unknown (6) |
 | Hazards | 8 closest hazards, each `dx/dy/width/height/rel_vel_x/rel_vel_y/boss_attached/present` (64) |
 
 `time_frac` matters more than it looks: without it the critic cannot distinguish a
 state at t=5 s from an identical-looking one at t=59 s, even though their true
 returns differ enormously.
 
-`state_vector_viewer.py`'s `FEATURE_NAMES` list must stay in the same order as
-`state_to_vector()`'s return, and `STATE_SIZE = OBSERVATION_SIZE` (119) appears in both `main.py` and
-`test_gui_client.py`. Changing the observation means touching all four places.
+`state_vector_viewer.py` lists one base frame. Training concatenates the latest
+four frames into a 504-value input, providing about 0.4 s of short-term history
+at 10 Hz without requiring a recurrent model.
 
 ---
 
-## Action space — five independent heads
+## Action space — one 12-way macro head
 
-Each head is sampled independently every step, so the agent can (for example)
-move left, look up and swing at once.
+The policy selects exactly one deliberate option per 100 ms decision: idle,
+move left/right, dash left/right, neutral/left/right jump, or nail attack
+left/right/up/down. This replaces the old five-head space whose factorised
+outputs still produced 180 joint button combinations, including contradictory
+attack/dash/jump mixtures.
 
-| Head | Size | Actions |
-|------|------|---------|
-| move | 6 | left, right, stop, tap-left, tap-right, nothing |
-| look | 4 | up, down, stop looking, nothing |
-| attack | 2 | attack, nothing |
-| dash | 2 | dash, nothing |
-| jump | 3 | short hop (0.1 s), long jump (0.4 s), nothing |
-
-Joint log-probability is the sum across heads. Per-head log-probs are stored in
-the rollout buffer as well, which is what lets `ppo_update` report a genuine
-per-head KL, clip fraction, entropy and gradient norm instead of only the blended
-joint figures — a calm head and a wild one average out to a perfectly
-normal-looking joint KL.
-
-Because KL is additive over heads, `TARGET_KL` is set to **0.1**, not the usual
-single-head 0.01–0.03. Across five heads that works out to a conventional ~0.02
-per-head budget; the textbook value stops nearly every update after one epoch.
+The single categorical head has a maximum entropy of `ln(12) = 2.48` and uses a
+conventional `TARGET_KL = 0.03`.
 
 Held directions (`left`/`right`/`up`/`down`) stay down until released. Attacks,
 dashes and jumps are timed taps whose release is scheduled *by the mod*, not by a
@@ -328,16 +318,20 @@ it reaches the buffer.
 
 | Event | Reward |
 |-------|--------|
-| Damage dealt to the boss | +1.0, plus 0.25 per consecutive clean hit, capped at +2.0 |
+| Boss HP removed | `delta_hp / 33`, so every real source of damage is proportional |
 | Boss Control FSM enters a real stun | +10 |
 | Boss defeated | +100 |
-| Time | −0.15 per second |
-| Damage taken | −4 per mask |
-| Death | −40 |
+| Clean exit from an ACTIVE boss phase | +0.05 |
+| Confirmed empty nail swing | −0.03 |
+| Time | −0.10 per second |
+| Too far during neutral/recovery/stun | up to −0.05 per second |
+| Damage taken | −3 per mask |
+| Death | −20 |
 
-The hit streak is tracked in the polling thread rather than in the reward
-function, because the poll sees every socket frame while the reward function only
-samples at 15 Hz and would miss hit/damage transitions falling between steps.
+An empty attack is resolved only after the nail animation ends with no hit. A
+button request rejected by cooldown is not labelled a whiff. Distance shaping is
+disabled while the boss is winding up or actively attacking, so evasive spacing
+is not punished.
 
 The stagger signal and move classifier are read directly from Pure Vessel's
 PlayMaker Control FSM. `agent/action.py:boss_move()` reads its
@@ -353,9 +347,10 @@ All in `main.py`.
 
 | Parameter | Value | Note |
 |-----------|-------|------|
-| `CONTROL_HZ` | 15 | 900 steps per capped episode |
-| `ROLLOUT_STEPS` | 2048 | ~2 episodes per update |
-| `GAMMA` | 0.997 | 333-step / 22 s horizon. At 0.99 a +100 defeat bonus discounts to 0.012 across an episode — the terminal rewards may as well not exist |
+| `CONTROL_HZ` | 10 | 600 decisions per capped episode |
+| `FRAME_STACK` | 4 | 504-value flattened network input |
+| `ROLLOUT_STEPS` | 2048 | ~205 s of game time per update |
+| `GAMMA` | 0.9955 | approximately the same per-second discount as 0.997 at 15 Hz |
 | `GAE_LAMBDA` | 0.95 | |
 | `CLIP_EPS` | 0.2 | policy ratio clip |
 | `VALUE_CLIP_EPS` | 1.0 | deliberately decoupled from `CLIP_EPS` — one bounds a dimensionless probability ratio, the other a return-scaled value |
@@ -363,11 +358,11 @@ All in `main.py`.
 | `ENT_COEF` | 0.01 | replaces epsilon-greedy exploration |
 | `VF_COEF` | 0.5 | |
 | `MAX_GRAD_NORM` | 0.5 | |
-| `TARGET_KL` | 0.1 | joint budget across five heads |
+| `TARGET_KL` | 0.03 | one categorical macro-action head |
 | `EPOCHS` / `MINIBATCH_SIZE` | 4 / 128 | 16 gradient steps per update |
 
-The network is a shared 119→128→128 tanh trunk with orthogonal initialisation,
-five categorical heads (gain 0.01) and one critic head (gain 1.0).
+The network is a shared 504→256→256 tanh trunk with orthogonal initialisation,
+one 12-way categorical head (gain 0.01) and one critic head (gain 1.0).
 
 ### Reading the monitor
 
@@ -386,7 +381,8 @@ why `grad_norm_trunk` and `grad_norm_critic` are logged separately.
 
 ## Wire protocol
 
-One TCP listener on `127.0.0.1:9000`, one thread per client. The trainer keeps
+One TCP listener on `127.0.0.1:9000` by default, one thread per client. Set
+`HOLLOWRL_PORT` or pass `--hollowrl-port=PORT` to isolate another instance. The trainer keeps
 two connections open (state poll and input), and the dashboards add more.
 
 **State request.** Send `pos\n`, receive one semicolon-separated line:
@@ -455,10 +451,7 @@ plotted against someone else's history — archive them as a pair.
 - **Reset costs ~9 s of fixed sleep per episode**, on top of the menu navigation.
   The surrounding comments describe a state-driven wait that the code does not
   currently do.
-- **`STATE_SIZE` is duplicated** in `main.py` and `test_gui_client.py`, and the
-  feature-name list in `state_vector_viewer.py` is maintained by hand.
-- **The reward's `hit_streak`** is read from the live state, so it is deliberately
-  absent from the observation vector — the agent cannot see its own streak.
-- **Single environment, no parallelism.** The game is the bottleneck (~98% of
-  wall-clock time), which is why the state poll is throttled to 100 Hz and the
-  reconnect loop backs off rather than spinning.
+- **The feature-name list** in `state_vector_viewer.py` is maintained by hand.
+- **One environment per process.** Ports are configurable, but running several
+  games still requires separate game processes/directories and isolated saves/logs.
+  See `MULTI_ENV_WINDOWS.md` before attempting vector collection.

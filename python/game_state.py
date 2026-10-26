@@ -6,13 +6,14 @@ globals directly (see enviroment.get_state), so there is exactly one socket
 and one parser no matter how many consumers there are.
 """
 
+import os
 import socket
 import threading
 import time
 from dataclasses import dataclass
 
-HOST = "127.0.0.1"
-PORT = 9000
+HOST = os.environ.get("HOLLOWRL_HOST", "127.0.0.1")
+PORT = int(os.environ.get("HOLLOWRL_PORT", "9000"))
 RECONNECT_DELAY = 0.5   # seconds to wait before retrying a failed connect
 SOCKET_TIMEOUT = 2.0    # give up on a silent server rather than blocking forever
 
@@ -76,6 +77,8 @@ boss_velocity = (0.0, 0.0)
 boss_position = (0.0, 0.0)
 boss_box = None
 boss_control_state = ""
+boss_state_age = 0.0
+_boss_state_last_update = time.monotonic()
 wall_distance_left = 100.0
 wall_distance_right = 100.0
 knight_health = 0
@@ -244,7 +247,8 @@ def _publish(frame):
     """Copy a parsed frame into the module globals readers watch."""
     global knight_box, attacking, attack_box, hit_count, damage_count, hazard_boxes, hazards
     global knight_velocity, knight_facing_right, boss_health, boss_facing_left
-    global boss_velocity, boss_position, boss_box, boss_control_state, knight_health, mana, game_speed, training_paused
+    global boss_velocity, boss_position, boss_box, boss_control_state, boss_state_age
+    global _boss_state_last_update, knight_health, mana, game_speed, training_paused
     global wall_distance_left, wall_distance_right
     global is_dashing, is_jumping, is_falling, is_on_ground, is_recoiling
     global is_touching_wall_left, is_touching_wall_right
@@ -264,6 +268,16 @@ def _publish(frame):
     boss_velocity = frame.boss_velocity
     boss_position = frame.boss_position
     boss_box = frame.boss_box
+    now = time.monotonic()
+    if (not frame.boss_control_state
+            or frame.boss_control_state != boss_control_state):
+        boss_state_age = 0.0
+    else:
+        # Express phase age in game seconds, so the feature stays comparable
+        # when the O hotkey changes Time.timeScale from 1x to 2x.
+        speed = frame.game_speed if frame.game_speed > 0.0 else 0.0
+        boss_state_age += max(now - _boss_state_last_update, 0.0) * speed
+    _boss_state_last_update = now
     boss_control_state = frame.boss_control_state
     wall_distance_left = frame.wall_distance_left
     wall_distance_right = frame.wall_distance_right
@@ -286,7 +300,7 @@ def _publish(frame):
 def _on_disconnect():
     """Blank out anything that would be a lie while we have no feed."""
     global connected, knight_box, attacking, attack_box, hazard_boxes, hazards
-    global hit_streak, _prev_hits, _prev_damages
+    global hit_streak, _prev_hits, _prev_damages, boss_state_age, _boss_state_last_update
 
     connected = False
     knight_box = None
@@ -296,6 +310,8 @@ def _on_disconnect():
     hazards = []
     # Don't bridge a streak across a dropped connection.
     hit_streak = 0
+    boss_state_age = 0.0
+    _boss_state_last_update = time.monotonic()
     _prev_hits = None
     _prev_damages = None
 

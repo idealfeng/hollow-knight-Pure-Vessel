@@ -1,3 +1,12 @@
+param(
+    [ValidateRange(1024, 65535)]
+    [int]$Port = 9000,
+    [ValidateRange(1, 8)]
+    [int]$FrameStack = 4,
+    [ValidateRange(5, 30)]
+    [int]$ControlHz = 10
+)
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = $PSScriptRoot
@@ -10,6 +19,10 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
 
 Push-Location $trainerDir
 try {
+    $env:HOLLOWRL_PORT = "$Port"
+    $env:HOLLOWRL_FRAME_STACK = "$FrameStack"
+    $env:HOLLOWRL_CONTROL_HZ = "$ControlHz"
+    Write-Host "HollowRL trainer: port=$Port, frame_stack=$FrameStack, control_hz=$ControlHz"
     & $pythonExe main.py
     exit $LASTEXITCODE
 }

@@ -14,8 +14,8 @@ def _orthogonal(layer, gain):
 class ActorCritic(nn.Module):
  
     def __init__(self, state_size, action_sizes, hidden=128):
-        """action_sizes: list of ints, one per independent action head,
-        e.g. [6, 4, 2, 2, 3] for movement/look/attack/dash/jump."""
+        """``action_sizes`` is kept generic, but the current environment uses
+        ``[12]``: one categorical head over deliberate macro actions."""
         super().__init__()
 
         self.trunk = nn.Sequential(

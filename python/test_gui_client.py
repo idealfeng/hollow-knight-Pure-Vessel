@@ -22,7 +22,6 @@ import time
 import tkinter as tk
 from tkinter import scrolledtext
 from collections import deque
-from functools import partial
 
 import numpy as np
 import torch
@@ -35,12 +34,9 @@ from enviroment import (
     is_done, get_state, state_to_vector, nearest_hazard_distance,
     relative_horizontal_position, on_ground, HazardSide, OBSERVATION_SIZE,
 )
-from agent import calculate_reward, boss_attack, boss_move, boss_phase
-from agent.action import (
-    BossAttack,
-    movement_actions, look_actions, attack_actions,
-    dash_actions, jump_actions,
-)
+from agent import RewardTracker, boss_attack, boss_move, boss_phase
+from agent.action import BossAttack, MACRO_ACTION_NAMES
+from hollow_knight_env import FrameStacker
 from ppo_model import ActorCritic
 from obs_norm import RunningNorm
 
@@ -50,35 +46,14 @@ HISTORY_LEN = 300
 LOG_MAX_LINES = 400
 GUI_STEP_DT = 0.03
 
-STATE_SIZE = OBSERVATION_SIZE
-
 # Longer than main.py's 60 s training cap: this is a manual-observation tool,
 # so a 2-minute cap gives room to watch boss states without the 60 s KILL
 # cutting a fight short. Still forces a death (Y hotkey) rather than running
 # forever.
 EPISODE_TIME_LIMIT = 120.0
 
-# Same five independent action heads as main.py - keep these two files in sync.
-GROUP_LABELS = ["move", "look", "attack", "dash", "jump"]
-ACTION_GROUPS = [movement_actions, look_actions, attack_actions,
-                  dash_actions, jump_actions]
-ACTION_SIZES = [len(g) for g in ACTION_GROUPS]   # [5, 3, 2, 2, 3]
-
-def _fn_name(fn):
-    """Human-readable name for a dispatch entry - unwraps functools.partial
-    (used for parameterized actions like jump duration) so the bound kwargs
-    show up instead of raising on the missing __name__."""
-    if isinstance(fn, partial):
-        kwargs = ",".join(f"{k}={v}" for k, v in fn.keywords.items())
-        return f"{fn.func.__name__}({kwargs})" if kwargs else fn.func.__name__
-    return fn.__name__
-
-
-# Read the human-readable name straight off each dispatch entry so this can
-# never drift out of sync with agent/action.py.
-ACTION_NAMES_PER_GROUP = [
-    {i: _fn_name(fn) for i, fn in group.items()} for group in ACTION_GROUPS
-]
+GROUP_LABELS = ["macro"]
+ACTION_NAMES_PER_GROUP = [{i: name for i, name in enumerate(MACRO_ACTION_NAMES)}]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_PATH = os.path.join(SCRIPT_DIR, "ppo_checkpoint.pth")
@@ -98,9 +73,11 @@ RELATIVE_POS_NAMES = {
 # reward terms worth writing to the scrolling event log; "time step" fires
 # every frame and would just be noise there
 LOGGED_LABELS = {
-    "hit landed",
+    "boss damage",
     "boss staggered",
     "boss defeated",
+    "clean dodge",
+    "empty attack",
     "took damage",
     "die",
 }
@@ -146,6 +123,7 @@ class App:
         self.session_reward = 0.0
         self.frame_count = 0
         self.terminal_handled = False
+        self.reward_tracker = RewardTracker()
         self.fight_hit_baseline = game_state.hit_count
         self.fight_damage_baseline = game_state.damage_count
 
@@ -271,6 +249,7 @@ class App:
         self.reward_history.clear()
         self.total_reward_history.clear()
         self.value_history.clear()
+        self.reward_tracker.reset()
 
         self.reward_label.config(text="Reward: -", fg="black")
         self.total_label.config(text=f"Episode total: 0.00   Session total: {self.session_reward:.2f}")
@@ -301,6 +280,7 @@ class App:
     def _load_model(self):
         self.model = None
         self.obs_norm = None
+        self.model_stacker = None
 
         if not os.path.exists(CHECKPOINT_PATH):
             self.model_status_label.config(text="No ppo_checkpoint.pth found")
@@ -308,15 +288,28 @@ class App:
 
         try:
             checkpoint = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=False)
-            model = ActorCritic(STATE_SIZE, ACTION_SIZES)
+            frame_stack = int(checkpoint.get("frame_stack", 1))
+            action_names = checkpoint.get("action_names", list(MACRO_ACTION_NAMES))
+            action_sizes = [len(action_names)]
+            state_size = int(checkpoint.get(
+                "observation_size", OBSERVATION_SIZE * frame_stack
+            ))
+            hidden = int(checkpoint.get("model_hidden", 128))
+            model = ActorCritic(state_size, action_sizes, hidden=hidden)
             model.load_state_dict(checkpoint["model"])
             model.eval()
             self.model = model
 
-            obs_norm = RunningNorm(STATE_SIZE)
+            obs_norm = RunningNorm(state_size)
             if "obs_norm" in checkpoint:
                 obs_norm.load_state_dict(checkpoint["obs_norm"])
             self.obs_norm = obs_norm
+            self.model_stacker = FrameStacker(OBSERVATION_SIZE, frame_stack)
+            self.model_action_names = action_names
+            global ACTION_NAMES_PER_GROUP
+            ACTION_NAMES_PER_GROUP = [
+                {i: name for i, name in enumerate(action_names)}
+            ]
 
             update = checkpoint.get("update", "?")
             episode = checkpoint.get("episode", "?")
@@ -341,7 +334,11 @@ class App:
         if vector is None:
             return None
 
-        raw = np.asarray(vector, dtype=np.float64)
+        base = np.asarray(vector, dtype=np.float32)
+        if not self.model_stacker.frames:
+            raw = self.model_stacker.reset(base)
+        else:
+            raw = self.model_stacker.append(base)
         obs = self.obs_norm.normalize(raw) if self.obs_norm is not None else raw.astype(np.float32)
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
 
@@ -354,8 +351,8 @@ class App:
         return {
             "probs_list": [p.tolist() for p in probs_list],
             "value": value.item(),
-            "entropy": sum(entropies),           # joint entropy = sum across heads
-            "greedy": greedy,                    # one action index per head
+            "entropy": sum(entropies),
+            "greedy": greedy,
         }
 
     # ------------------------------------------------------------------
@@ -405,6 +402,9 @@ class App:
             self.reward_history.clear()
             self.total_reward_history.clear()
             self.value_history.clear()
+            self.reward_tracker.reset()
+            if self.model_stacker is not None:
+                self.model_stacker.frames.clear()
         elif not live_fight:
             self.episode_start_time = None
 
@@ -448,7 +448,7 @@ class App:
         current_state["damage_count"] = game_state.damage_count - self.fight_damage_baseline
 
         if self.frame_count % 30 == 0:
-            print(current_state)
+            print(current_state, flush=True)
 
         done = is_done()
 
@@ -494,13 +494,13 @@ class App:
             self.model_action_label.config(text=f"Greedy: {greedy_text}")
             self.model_value_label.config(
                 text=f"V(s): {snapshot['value']:+.3f}   "
-                f"Entropy (sum of {len(ACTION_GROUPS)} heads): {snapshot['entropy']:.3f}"
+                f"Entropy (macro head): {snapshot['entropy']:.3f}"
             )
 
         if (not self.paused
                 and self.previous_state is not None
                 and not (done and self.terminal_handled)):
-            reward, breakdown = calculate_reward(
+            reward, breakdown = self.reward_tracker.transition(
                 self.previous_state, current_state, done,
                 timed_out=self.timed_out, return_breakdown=True,
                 step_dt=GUI_STEP_DT,
@@ -531,11 +531,32 @@ class App:
                 lines = "(no reward terms fired)"
             self.breakdown_label.config(text=lines)
 
+            if self.frame_count % 30 == 0 and breakdown:
+                print(
+                    "[breakdown frame %6d] %s | phase=%s" % (
+                        self.frame_count,
+                        ", ".join(f"{l}{a:+.4f}" for l, a in breakdown),
+                        phase_type.name,
+                    ),
+                    flush=True,
+                )
+
             notable = [item for item in breakdown if item[0] in LOGGED_LABELS]
             if notable:
                 summary = ", ".join(f"{label} {amount:+.2f}" for label, amount in notable)
                 tag = "good" if reward > 0 else ("bad" if reward < 0 else "neutral")
                 self._log(f"[frame {self.frame_count:6d}] {summary}  (total {self.total_reward:+.2f})", tag)
+                print(
+                    "[event frame %6d] %s | boss_hp=%s knight_hp=%s move=%s phase=%s" % (
+                        self.frame_count,
+                        summary,
+                        boss_health,
+                        knight_health,
+                        move_type.name,
+                        phase_type.name,
+                    ),
+                    flush=True,
+                )
 
             if done:
                 self._log(f"=== episode end: {done_reason} | total reward {self.total_reward:+.2f} ===", "marker")

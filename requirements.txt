@@ -7,3 +7,4 @@
 numpy
 torch
 matplotlib
+gymnasium>=1.0,<2
