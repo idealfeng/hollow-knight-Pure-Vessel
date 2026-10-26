@@ -35,7 +35,7 @@ from enviroment import (
     is_done, get_state, state_to_vector, nearest_hazard_distance,
     relative_horizontal_position, on_ground, HazardSide, OBSERVATION_SIZE,
 )
-from agent import calculate_reward, boss_attack, boss_move
+from agent import calculate_reward, boss_attack, boss_move, boss_phase
 from agent.action import (
     BossAttack,
     movement_actions, look_actions, attack_actions,
@@ -462,6 +462,7 @@ class App:
 
         attack_type = boss_attack(current_state)
         move_type = boss_move(current_state)
+        phase_type = boss_phase(current_state)
         distance_text = f"{nearest_hazard_distance(knight_box, hazard_boxes):.2f}" if hazard_boxes else "-"
         relative_pos = relative_horizontal_position(current_state)
         grounded = on_ground(current_state)
@@ -473,7 +474,7 @@ class App:
                 f"Damage this fight: {current_state['damage_count']}\n"
                 f"Attacking: {'YES' if attacking else 'no'}\n"
                 f"Boss attack: {ATTACK_NAMES.get(attack_type, attack_type)}\n"
-                f"Boss move: {move_type.name}\n"
+                f"Boss move: {move_type.name}   Phase: {phase_type.name}\n"
                 f"Distance to hazard: {distance_text}\n"
                 f"Hazard relative pos: {RELATIVE_POS_NAMES.get(relative_pos, relative_pos)}\n"
                 f"On ground: {'YES' if grounded else 'no'}\n"
