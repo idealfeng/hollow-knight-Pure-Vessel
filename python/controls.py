@@ -99,6 +99,13 @@ def kill():
     _send("KILL")
 
 
+def set_speed(factor):
+    factor = float(factor)
+    if not 0.0 <= factor <= 4.0:
+        raise ValueError("game speed must be in 0..4.0")
+    return _send(f"SPEED {factor:g}")
+
+
 def close():
     """Drop the command socket, releasing any held action."""
     global _sock

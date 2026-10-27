@@ -216,14 +216,37 @@ namespace KnightPos
 
         public Bounds? GetBossBox(HealthManager boss)
         {
+            Collider2D collider = GetBossCollider(boss);
+            return collider != null ? collider.bounds : (Bounds?)null;
+        }
+
+        public Collider2D GetBossCollider(HealthManager boss)
+        {
             if (boss == null)
                 return null;
 
-            Collider2D collider = boss.GetComponent<Collider2D>();
-            if (collider == null)
-                collider = boss.GetComponentInChildren<Collider2D>();
+            // The first collider can be disabled during an attack. Prefer a
+            // live body collider on the boss itself, then on its children.
+            // Trigger colliders here include large attack detection ranges;
+            // using one as the body would corrupt distance and box features.
+            foreach (Collider2D collider in boss.GetComponents<Collider2D>())
+            {
+                if (UsableBossCollider(collider))
+                    return collider;
+            }
+            foreach (Collider2D collider in boss.GetComponentsInChildren<Collider2D>(true))
+            {
+                if (UsableBossCollider(collider))
+                    return collider;
+            }
+            return null;
+        }
 
-            return collider != null && collider.enabled ? collider.bounds : (Bounds?)null;
+        private static bool UsableBossCollider(Collider2D collider)
+        {
+            return collider != null && collider.enabled && !collider.isTrigger
+                && collider.gameObject.activeInHierarchy
+                && collider.bounds.size.x > 0f && collider.bounds.size.y > 0f;
         }
 
         // HeroController keeps 5 separate NailSlash instances as fields

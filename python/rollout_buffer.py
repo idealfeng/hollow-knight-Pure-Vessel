@@ -101,4 +101,54 @@ class RolloutBuffer:
             torch.as_tensor(returns),
             torch.as_tensor(self.values[:n]),
         )
+
+
+class VectorRolloutBuffer:
+    """One independent trajectory buffer per external game process.
+
+    The buffers are concatenated only *after* GAE has been computed along
+    each environment's own time axis.  Flattening interleaved transitions
+    first would incorrectly bootstrap env 0 from env 1's value estimate.
+    """
+
+    def __init__(self, steps_per_env, num_envs, state_size, num_action_heads):
+        if num_envs < 1:
+            raise ValueError("num_envs must be >= 1")
+        self.steps_per_env = int(steps_per_env)
+        self.num_envs = int(num_envs)
+        self.buffers = [
+            RolloutBuffer(self.steps_per_env, state_size, num_action_heads)
+            for _ in range(self.num_envs)
+        ]
+
+    def clear(self):
+        for buffer in self.buffers:
+            buffer.clear()
+
+    def add(self, env_index, obs, action, logprob, value, reward, done):
+        self.buffers[int(env_index)].add(
+            obs, action, logprob, value, reward, done
+        )
+
+    def __len__(self):
+        return sum(len(buffer) for buffer in self.buffers)
+
+    @property
+    def is_full(self):
+        return all(buffer.is_full for buffer in self.buffers)
+
+    def compute_gae(self, last_values, gamma=0.99, gae_lambda=0.95):
+        if len(last_values) != self.num_envs:
+            raise ValueError(
+                f"expected {self.num_envs} bootstrap values, got {len(last_values)}"
+            )
+        if not self.is_full:
+            counts = [len(buffer) for buffer in self.buffers]
+            raise RuntimeError(f"vector rollout is incomplete: {counts}")
+
+        per_env = [
+            buffer.compute_gae(last_values[i], gamma, gae_lambda)
+            for i, buffer in enumerate(self.buffers)
+        ]
+        return tuple(torch.cat(parts, dim=0) for parts in zip(*per_env))
  

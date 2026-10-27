@@ -84,6 +84,11 @@ class HollowKnightEnv(gym.Env):
         self.episode_steps = 0
         self.min_boss_hp = None
         self._has_reset_once = False
+        self.last_reset_seconds = 0.0
+        self.last_reset_attempts = 0
+        self.total_reset_seconds = 0.0
+        self.total_reset_retries = 0
+        self.reset_count = 0
 
     def _time_fraction(self, steps=None):
         steps = self.episode_steps if steps is None else steps
@@ -130,13 +135,35 @@ class HollowKnightEnv(gym.Env):
             "dodges": self.reward_tracker.dodges,
             "won": bool(won),
             "truncated_reason": truncated_reason,
+            "reset_seconds": self.last_reset_seconds,
+            "reset_attempts": self.last_reset_attempts,
+            "total_reset_seconds": self.total_reset_seconds,
+            "total_reset_retries": self.total_reset_retries,
+            "reset_count": self.reset_count,
         }
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
+        reset_started = time.perf_counter()
         options = options or {}
-        current, _ = self._read(retries=5)
+        # A fresh Windows worker starts its polling thread in parallel with
+        # this reset. Give the first connection time to publish a frame.
+        first_reset = not self._has_reset_once
+        current, _ = self._read(
+            retries=200 if first_reset else 5,
+            delay=0.05 if first_reset else 0.02,
+        )
         reuse = options.get("reuse_live_fight", self.reuse_live_fight)
+
+        if (options.get("require_live_on_first_reset", False)
+                and not self._has_reset_once and not self._live(current)):
+            port = os.environ.get("HOLLOWRL_PORT", "9000")
+            hp = None if current is None else current.get("boss_health")
+            raise RuntimeError(
+                f"port {port}: first reset requires an active boss fight "
+                f"(boss_health={hp}). Enter the Pure Vessel arena before "
+                "starting training."
+            )
 
         if self._live(current) and (self._has_reset_once or not reuse):
             controls.kill()
@@ -146,8 +173,18 @@ class HollowKnightEnv(gym.Env):
             current = None
 
         if not self._live(current):
-            if not reset_environment(current):
+            reset_details = reset_environment(current, return_details=True)
+            self.last_reset_attempts = int(reset_details["attempts"])
+            self.total_reset_retries += max(self.last_reset_attempts - 1, 0)
+            if not reset_details["ok"]:
                 raise RuntimeError("could not reset Pure Vessel fight")
+        else:
+            self.last_reset_attempts = 0
+            # Reusing a fight on worker startup skips reset_environment(),
+            # which normally establishes the per-episode counter baselines.
+            # Without this, the first episode reports lifetime hits/damage
+            # accumulated by earlier runs of the same game process.
+            game_state.reset_episode_counters()
 
         state, raw = self._read(steps=0)
         if not self._live(state) or raw is None:
@@ -159,6 +196,9 @@ class HollowKnightEnv(gym.Env):
         self.min_boss_hp = state["boss_health"]
         self.reward_tracker.reset()
         self._has_reset_once = True
+        self.last_reset_seconds = time.perf_counter() - reset_started
+        self.total_reset_seconds += self.last_reset_seconds
+        self.reset_count += 1
         return self.stacker.reset(raw), self._info()
 
     def step(self, action):

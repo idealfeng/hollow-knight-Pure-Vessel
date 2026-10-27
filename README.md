@@ -204,6 +204,11 @@ correct working directory so checkpoints stay under `python/`):
 .\run_windows.ps1
 ```
 
+For two or more live game instances sharing one PPO learner, follow
+[`MULTI_ENV_WINDOWS.md`](MULTI_ENV_WINDOWS.md) and run
+`run_multi_windows.ps1`. Starting several copies of `main.py` is not vector
+training; each copy would learn a separate policy.
+
 This opens the training monitor and starts collecting rollouts. Training resumes
 automatically from `ppo_checkpoint.pth` if one exists; the monitor's header shows
 whether the run is fresh or resumed and from which update. Checkpoints are local

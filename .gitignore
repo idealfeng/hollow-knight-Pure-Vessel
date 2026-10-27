@@ -15,6 +15,7 @@ venv/
 *.npz
 *.pth
 runs_archive/
+runs/
 
 # Local tooling
 .claude/settings.local.json

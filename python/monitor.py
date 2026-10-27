@@ -47,13 +47,19 @@ def _rolling_average(values, window):
 
 class TrainingMonitor:
 
-    def __init__(self, target_kl=0.03, action_sizes=None, action_labels=None):
+    def __init__(self, target_kl=0.03, action_sizes=None, action_labels=None,
+                 history_path=None):
 
         self.target_kl = target_kl
         self.action_sizes = action_sizes or DEFAULT_ACTION_SIZES
         self.num_heads = len(self.action_sizes)
         self.action_labels = action_labels or [f"h{i}" for i in range(self.num_heads)]
         self.max_entropy = max_entropy(self.action_sizes)
+        self.history_path = history_path or HISTORY_PATH
+        self.training_status = None
+        self.training_error = ""
+        history_dir = os.path.dirname(os.path.abspath(self.history_path))
+        os.makedirs(history_dir, exist_ok=True)
 
         self.root = tk.Tk()
         self.root.title("PPO Training Monitor")
@@ -195,11 +201,11 @@ class TrainingMonitor:
     # wipe the graphs back to a blank slate
     # ------------------------------------------------------------------
     def _load_history(self):
-        if not os.path.exists(HISTORY_PATH):
+        if not os.path.exists(self.history_path):
             return
 
         try:
-            data = np.load(HISTORY_PATH)
+            data = np.load(self.history_path)
             self.rewards = data["rewards"].tolist()
             self.steps = data["steps"].tolist()
             self.hits = data["hits"].tolist()
@@ -243,7 +249,7 @@ class TrainingMonitor:
     def _save_history(self):
         try:
             np.savez(
-                HISTORY_PATH,
+                self.history_path,
                 rewards=np.array(self.rewards, dtype=np.float32),
                 steps=np.array(self.steps, dtype=np.int32),
                 hits=np.array(self.hits, dtype=np.int32),
@@ -473,6 +479,13 @@ class TrainingMonitor:
         self.status_label.config(text=status)
 
         warnings = []
+        if self.training_status == "failed":
+            warnings.append(
+                f"TRAINING STOPPED: {self.training_error} "
+                "(see training_error.log)"
+            )
+        elif self.training_status == "complete":
+            warnings.append("TRAINING FINISHED: target updates reached")
         update_count = len(self.policy_losses)
         if update_count:
             latest_kl = self.approx_kls[-1]

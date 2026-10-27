@@ -65,6 +65,7 @@ public class HollowRL : BaseUnityPlugin
     private bool canShadeCloakNow;
     private float gameSpeed = 1f;
     private bool trainingPaused;
+    private volatile float requestedGameSpeed = -1f;
     private volatile bool serverRunning = true;
     private bool inputReady;
 
@@ -77,6 +78,7 @@ public class HollowRL : BaseUnityPlugin
     private StreamWriter diagnosticWriter;
     private int diagnosticBossId = int.MinValue;
     private Component[] diagnosticComponents = new Component[0];
+    private readonly HashSet<int> diagnosticColliderDumped = new HashSet<int>();
 
     private int ResolvePort()
     {
@@ -99,9 +101,56 @@ public class HollowRL : BaseUnityPlugin
         return fallback;
     }
 
+
+    private static int ResolveFrameRate()
+    {
+        foreach (string arg in Environment.GetCommandLineArgs())
+        {
+            const string prefix = "--hollowrl-fps=";
+            int value;
+            if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(arg.Substring(prefix.Length), out value)
+                    && value >= 30 && value <= 240)
+                return value;
+        }
+        return 0;
+    }
+
+
+    private static float ResolveGameSpeed()
+    {
+        foreach (string arg in Environment.GetCommandLineArgs())
+        {
+            const string prefix = "--hollowrl-speed=";
+            float value;
+            if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    && float.TryParse(arg.Substring(prefix.Length),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out value)
+                    && value >= 0.5f && value <= 4f)
+                return value;
+        }
+        return -1f;
+    }
+
     private void Awake()
     {
         Harmony.CreateAndPatchAll(typeof(HollowRL));
+
+        // Multiple windowed instances must keep simulating while another one
+        // has focus.  An optional frame cap saves a large amount of rendering
+        // work without making the 60 ms input taps shorter than one frame.
+        Application.runInBackground = true;
+        int frameRate = ResolveFrameRate();
+        if (frameRate > 0)
+        {
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = frameRate;
+        }
+        float startupSpeed = ResolveGameSpeed();
+        if (startupSpeed > 0f)
+            Time.timeScale = startupSpeed;
 
         knightPos = gameObject.AddComponent<KnightPos.DiagnosticsOverlay>();
 
@@ -134,6 +183,13 @@ public class HollowRL : BaseUnityPlugin
         // thread, every frame) and applied/stored below under the lock so the
         // socket thread sees a consistent snapshot. These stay real keyboard
         // hotkeys - they are for the human watching, not for the agent.
+        float speedRequest = requestedGameSpeed;
+        if (speedRequest >= 0f)
+        {
+            requestedGameSpeed = -1f;
+            Time.timeScale = speedRequest;
+        }
+
         bool speedToggle = Input.GetKeyDown(KeyCode.O);
         bool pauseToggle = Input.GetKeyDown(KeyCode.P);
 
@@ -228,7 +284,8 @@ public class HollowRL : BaseUnityPlugin
         bool? bossFacingRight = knightPos.IsBossFacingRight(boss);
         Vector2 bVelocity = knightPos.GetBossVelocity(boss);
         Vector2 bPosition = knightPos.GetBossPosition(boss);
-        Bounds? bBox = knightPos.GetBossBox(boss);
+        Collider2D bCollider = knightPos.GetBossCollider(boss);
+        Bounds? bBox = bCollider != null ? bCollider.bounds : (Bounds?)null;
         List<KnightPos.HazardSnapshot> currentHazards = knightPos.GetHazards(boss);
         string controlState = ReadControlFsmState(boss);
         int kHealth = knightPos.GetKnightHealth();
@@ -349,7 +406,7 @@ public class HollowRL : BaseUnityPlugin
 
         UpdateDiagnosticRecording(
             boss, box, velocity, kHealth, onGround,
-            health, bPosition, bVelocity, currentHazards);
+            health, bPosition, bVelocity, bCollider, currentHazards);
     }
 
 
@@ -362,6 +419,7 @@ public class HollowRL : BaseUnityPlugin
         int currentBossHealth,
         Vector2 currentBossPosition,
         Vector2 currentBossVelocity,
+        Collider2D selectedBossCollider,
         List<KnightPos.HazardSnapshot> currentHazards)
     {
         if (boss == null)
@@ -387,9 +445,11 @@ public class HollowRL : BaseUnityPlugin
                 diagnosticWriter.WriteLine(
                     "game_time\treal_time\tboss_id\tboss_hp\tboss_x\tboss_y"
                     + "\tboss_vx\tboss_vy\tknight_x\tknight_y\tknight_vx\tknight_vy"
-                    + "\tknight_hp\ton_ground\tfsms\tanimations\thazard_count\thazards");
+                    + "\tknight_hp\ton_ground\tfsms\tanimations\thazard_count\thazards"
+                    + "\tboss_collider_id\tboss_colliders");
                 diagnosticBossId = bossId;
                 diagnosticComponents = boss.GetComponentsInChildren<Component>(true);
+                diagnosticColliderDumped.Clear();
                 nextDiagnosticAt = 0f;
                 Logger.LogInfo("HollowRL: Pure Vessel diagnostics -> " + path);
             }
@@ -409,6 +469,8 @@ public class HollowRL : BaseUnityPlugin
         try
         {
             Vector2 knightCenter = currentKnightBox.center;
+            int colliderId = selectedBossCollider != null
+                ? selectedBossCollider.GetInstanceID() : 0;
             var line = new StringBuilder();
             line.Append(FormatFloat(Time.time)).Append('\t')
                 .Append(FormatFloat(Time.unscaledTime)).Append('\t')
@@ -427,7 +489,12 @@ public class HollowRL : BaseUnityPlugin
                 .Append(ReadFsmStates()).Append('\t')
                 .Append(ReadAnimationNames()).Append('\t')
                 .Append(currentHazards.Count).Append('\t')
-                .Append(FormatHazards(currentHazards));
+                .Append(FormatHazards(currentHazards)).Append('\t')
+                .Append(colliderId).Append('\t');
+            // The full hierarchy is needed once per selected collider, not
+            // on every 50 ms sample of a long training run.
+            if (diagnosticColliderDumped.Add(colliderId))
+                line.Append(FormatBossColliders(boss));
             diagnosticWriter.WriteLine(line.ToString());
         }
         catch (Exception exc)
@@ -435,6 +502,27 @@ public class HollowRL : BaseUnityPlugin
             Logger.LogWarning("HollowRL: diagnostic write failed - " + exc.Message);
             CloseDiagnosticRecording();
         }
+    }
+
+
+    private static string FormatBossColliders(HealthManager boss)
+    {
+        var entries = new List<string>();
+        foreach (Collider2D collider in boss.GetComponentsInChildren<Collider2D>(true))
+        {
+            if (collider == null)
+                continue;
+            Bounds box = collider.bounds;
+            entries.Add(collider.GetInstanceID() + "~"
+                + Sanitize(collider.gameObject.name) + "~"
+                + Sanitize(collider.GetType().Name) + "~"
+                + (collider.enabled ? "1" : "0") + "~"
+                + (collider.gameObject.activeInHierarchy ? "1" : "0") + "~"
+                + (collider.isTrigger ? "1" : "0") + "~"
+                + FormatFloat(box.min.x) + "~" + FormatFloat(box.min.y) + "~"
+                + FormatFloat(box.max.x) + "~" + FormatFloat(box.max.y));
+        }
+        return string.Join("||", entries.ToArray());
     }
 
 
@@ -570,6 +658,7 @@ public class HollowRL : BaseUnityPlugin
         }
         diagnosticBossId = int.MinValue;
         diagnosticComponents = new Component[0];
+        diagnosticColliderDumped.Clear();
     }
 
 
@@ -683,6 +772,7 @@ public class HollowRL : BaseUnityPlugin
     ///   TAP &lt;action&gt; &lt;ms&gt;   hold for ms, released by the mod
     ///   CLEAR                     release everything
     ///   KILL                      instant death, to force an episode reset
+    ///   SPEED &lt;factor&gt;            set Unity timeScale on the main thread
     /// </summary>
     private string HandleInputCommand(string command)
     {
@@ -692,6 +782,18 @@ public class HollowRL : BaseUnityPlugin
         if (verb == "CLEAR" || verb == "KILL")
         {
             InputInjector.Enqueue(verb, null, 0f);
+            return "ok";
+        }
+
+        if (verb == "SPEED")
+        {
+            float factor;
+            if (parts.Length < 2 || !float.TryParse(parts[1],
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out factor) || factor < 0f || factor > 4f)
+                return "err bad speed";
+            requestedGameSpeed = factor;
             return "ok";
         }
 
