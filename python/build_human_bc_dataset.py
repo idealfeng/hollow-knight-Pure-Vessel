@@ -2,16 +2,16 @@
 
 A human session records 60 FPS raw button bitmasks plus the same state protocol
 the trainer reads (see HUMAN_DEMONSTRATIONS.md). ``train_bc.py`` needs 10 Hz
-stacked observations paired with one of the 12 macro-action labels. This script
+stacked observations paired with seven button labels. This script
 bridges the two:
 
   * it uses the *corrected* episode boundaries from ``episodes_verified.jsonl``
     (the raw ``frames.jsonl`` ``episode`` tag came from the old, buggy recorder);
   * it downsamples each fight from 60 FPS to the 10 Hz control rate;
-  * it maps the held-button bitmask to the closest 12-way macro action;
-  * it stacks four consecutive frames and recomputes per-step rewards;
-  * it writes one NPZ in the same shape ``diagnose_checkpoint.py --save-demos``
-    produces, so ``train_bc.py`` can consume it unchanged.
+  * it preserves the seven combat buttons from the held-button bitmask;
+  * it stacks four consecutive frames and aligns rewards to the action that
+    precedes each state transition;
+  * it writes an NPZ that ``train_bc.py`` can consume.
 """
 
 import argparse
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from agent.action import MACRO_ACTION_NAMES, MacroAction
+from agent.action import BUTTON_ORDER
 from agent.reward import calculate_reward
 from enviroment.state_to_vector import OBSERVATION_SIZE, state_to_vector
 from game_state import _parse_frame
@@ -39,54 +39,26 @@ LEFT, RIGHT, UP, DOWN, ATTACK, JUMP, DASH = 0, 1, 2, 3, 4, 5, 6
 POLICY = "human"
 
 
-def held_mask_to_macro(held, state=None):
-    """Map a held-button bitmask to the closest 12-way macro action.
+def held_to_buttons(held):
+    """Extract the multi-binary button vector from a recorded held-bitmask.
 
-    ``dash`` and ``jump`` already combine with movement in the macro set
-    (``dash_left``, ``jump_right``, ...), so those chords survive exactly.
-    Attack macros stop movement first (see ``agent/action.py``), so a moving
-    attack keeps only its facing direction - the part the policy can act on.
+    The recorder stores the full 11-button mask; the policy only needs the
+    seven combat buttons in ``BUTTON_ORDER``. This mapping is lossless for
+    those buttons - no chord is collapsed into a single macro label.
     """
-    if held & (1 << ATTACK):
-        if held & (1 << UP):
-            return MacroAction.ATTACK_UP
-        if held & (1 << DOWN):
-            return MacroAction.ATTACK_DOWN
-        if held & (1 << LEFT):
-            return MacroAction.ATTACK_LEFT
-        if held & (1 << RIGHT):
-            return MacroAction.ATTACK_RIGHT
-        # A bare attack has no direction; aim by the knight's current facing.
-        if state is not None and not state.get("knight_facing_right", True):
-            return MacroAction.ATTACK_LEFT
-        return MacroAction.ATTACK_RIGHT
-
-    if held & (1 << DASH):
-        if held & (1 << LEFT):
-            return MacroAction.DASH_LEFT
-        if held & (1 << RIGHT):
-            return MacroAction.DASH_RIGHT
-        if state is not None and not state.get("knight_facing_right", True):
-            return MacroAction.DASH_LEFT
-        return MacroAction.DASH_RIGHT
-
-    if held & (1 << JUMP):
-        if held & (1 << LEFT):
-            return MacroAction.JUMP_LEFT
-        if held & (1 << RIGHT):
-            return MacroAction.JUMP_RIGHT
-        return MacroAction.JUMP
-
-    if held & (1 << LEFT) and held & (1 << RIGHT):
-        return MacroAction.IDLE
-    if held & (1 << LEFT):
-        return MacroAction.MOVE_LEFT
-    if held & (1 << RIGHT):
-        return MacroAction.MOVE_RIGHT
-    return MacroAction.IDLE
+    buttons = [int(bool(held & (1 << BUTTON_NAMES.index(name))))
+               for name in BUTTON_ORDER]
+    # The policy represents each direction pair as a three-way choice. A
+    # human can briefly hold both keys during a turn; that input has no clear
+    # direction and is represented as neutral in the training data.
+    for first, second in ((0, 1), (2, 3)):
+        if buttons[first] and buttons[second]:
+            buttons[first] = buttons[second] = 0
+    return buttons
 
 
-def frame_to_state_dict(frame, hit_baseline=0, damage_baseline=0):
+def frame_to_state_dict(frame, hit_baseline=0, damage_baseline=0,
+                        boss_state_age=0.0):
     """Adapt a parsed :class:`Frame` to the dict ``state_to_vector`` expects.
 
     ``hit_count``/``damage_count`` are lifetime counters on the wire; subtract
@@ -110,7 +82,7 @@ def frame_to_state_dict(frame, hit_baseline=0, damage_baseline=0):
         "boss_position": frame.boss_position,
         "boss_box": frame.boss_box,
         "boss_control_state": frame.boss_control_state,
-        "boss_state_age": 0.0,
+        "boss_state_age": boss_state_age,
         "wall_distance_left": frame.wall_distance_left,
         "wall_distance_right": frame.wall_distance_right,
         "knight_health": frame.knight_health,
@@ -203,7 +175,21 @@ def build_session(session_dir):
         # Corrected boundaries, not the old per-frame episode tag.
         ep_records = [(r, s) for r, s in frames
                       if start_frame <= r["frame"] <= end_frame]
+        state_ages = {}
+        previous_fsm = None
+        state_started_at = start_game_time
+        for record, state in ep_records:
+            if state.boss_control_state != previous_fsm:
+                state_started_at = record["game_time"]
+                previous_fsm = state.boss_control_state
+            state_ages[record["frame"]] = max(record["game_time"] - state_started_at, 0.0)
+        final_record = ep_records[-1] if ep_records else None
         ep_records = downsample_frames(ep_records, start_game_time)
+        # A death/win can fall between two 10 Hz grid points. Keep its final
+        # state for the preceding action's reward, but never train an action
+        # from that terminal frame.
+        if ep_records and final_record[0]["frame"] != ep_records[-1][0]["frame"]:
+            ep_records.append(final_record)
         if len(ep_records) < 2:
             continue
 
@@ -211,23 +197,26 @@ def build_session(session_dir):
         step_observations = []
         step_actions = []
         for record, state in ep_records:
-            state_dict = frame_to_state_dict(state, hit_baseline, damage_baseline)
+            state_dict = frame_to_state_dict(
+                state, hit_baseline, damage_baseline,
+                boss_state_age=state_ages[record["frame"]],
+            )
             rel = record["game_time"] - start_game_time
             time_frac = min(rel / EPISODE_TIME_LIMIT, 1.0)
             obs = state_to_vector(state_dict, time_frac)
             step_states.append(state_dict)
-            step_observations.append(np.asarray(obs, dtype=np.float32))
-            step_actions.append(int(held_mask_to_macro(record["held"], state_dict)))
+            step_observations.append(None if obs is None else np.asarray(obs, dtype=np.float32))
+            step_actions.append(held_to_buttons(record["held"]))
 
-        stacked = stack_observations(step_observations)
-        for index in range(len(step_states)):
-            done = index == len(step_states) - 1
-            reward = 0.0
-            if index > 0:
-                reward = calculate_reward(
-                    step_states[index - 1], step_states[index], done,
-                    step_dt=STEP_DT,
-                )
+        if any(obs is None for obs in step_observations[:-1]):
+            raise ValueError(f"{session_dir}: missing knight geometry during combat")
+        stacked = stack_observations(step_observations[:-1])
+        for index in range(len(step_states) - 1):
+            done = index == len(step_states) - 2
+            reward = calculate_reward(
+                step_states[index], step_states[index + 1], done,
+                step_dt=STEP_DT,
+            )
             observations.append(stacked[index])
             actions.append(step_actions[index])
             episode_ids.append(episode["episode"])
@@ -293,7 +282,7 @@ def main():
         episode_ids=data["episode_ids"],
         rewards=data["rewards"],
         dones=data["dones"],
-        action_names=np.asarray(MACRO_ACTION_NAMES),
+        action_names=np.asarray(BUTTON_ORDER),
         observation_size=np.int32(data["observations"].shape[1]),
         format_version=np.int32(CHECKPOINT_FORMAT),
         policy=np.str_(POLICY),

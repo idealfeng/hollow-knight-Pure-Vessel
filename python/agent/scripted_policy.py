@@ -5,7 +5,7 @@ macro actions can approach and hit the boss at all. It is not an expert policy
 or a replacement for PPO.
 """
 
-from agent.action import MacroAction, PureVesselMove, PureVesselPhase, boss_move, boss_phase
+from agent.action import MacroAction, BossMove, BossPhase, boss_move, boss_phase
 from agent.calc import box_center, box_distance
 
 
@@ -46,7 +46,6 @@ def evasive_action(state):
     """Candidate demonstration policy: react to visible windups, then approach.
 
     It uses only the same current memory fields exposed to the learner.
-    Performance must be measured before treating these actions as good labels.
     """
     knight_box = state.get("knight_box")
     if knight_box is None or state.get("boss_health", -1) <= 0:
@@ -65,42 +64,26 @@ def evasive_action(state):
     move, phase = boss_move(state), boss_phase(state)
     ground = state.get("is_on_ground", False)
     shade = state.get("can_shade_cloak_now", False)
-    dangerous = phase in (PureVesselPhase.WINDUP, PureVesselPhase.ACTIVE)
+    dangerous = phase in (BossPhase.WINDUP, BossPhase.ACTIVE)
 
-    # Do not trigger the counter stance by swinging directly into it.
-    if move == PureVesselMove.COUNTER and dangerous:
-        return away if abs(dx) < 6 else MacroAction.IDLE
+    # 横向冲锋（地面 Dash / 挥砍）：跳起躲过
+    if move == BossMove.DASH and dangerous and ground and abs(dx) < 14:
+        return MacroAction.JUMP
 
-    if move == PureVesselMove.FOCUS and dangerous and abs(dx) < 10:
-        return dash_away if shade and abs(dx) < 5 else away
+    # 空中俯冲（跳起来斜冲锋）：冲刺穿过或远离
+    if move == BossMove.DIVE and dangerous:
+        if shade and abs(dx) < 8:
+            return dash_toward
+        return away
 
-    if move == PureVesselMove.DSTAB and dangerous and abs(dx) < 4:
-        return dash_away if shade else away
+    # 冲击波（放波）：跳起躲地面波
+    if move == BossMove.SHOCKWAVE and dangerous and ground:
+        return MacroAction.JUMP
 
-    # Ground sword swings and lunges can be cleared by a held jump. A dash
-    # through the boss is a fallback if an active lunge is already close.
-    if move in (PureVesselMove.TRIPLE_SLASH, PureVesselMove.DASH) and dangerous:
-        if ground and abs(dx) < 16:
-            if phase == PureVesselPhase.ACTIVE and shade and abs(dx) < 5:
-                return dash_toward
-            return MacroAction.JUMP
-
-    if move == PureVesselMove.DAGGER and dangerous and ground:
-        return MacroAction.JUMP_RIGHT if dx >= 0 else MacroAction.JUMP_LEFT
-
-    if move == PureVesselMove.TENDRIL and not state.get("boss_control_state", "").endswith("Recover"):
-        if ground:
-            return MacroAction.JUMP
-
-    if move == PureVesselMove.PLUME:
-        half_width = (knight_box[2] - knight_box[0]) / 2
-        for hazard in state.get("hazards", []):
-            left, bottom, right, top = hazard.box
-            if not hazard.boss_attached and top - bottom > 3 and left - half_width < kx < right + half_width:
-                return MacroAction.MOVE_LEFT if kx - left < right - kx else MacroAction.MOVE_RIGHT
-
-    if (not ground and body is not None and dy < -1.0 and abs(dx) < 3.5
-            and box_distance(knight_box, body) < 3.0 and not state.get("attacking")):
-        return MacroAction.ATTACK_DOWN
+    # 飞刀（放飞镖）：跳起或远离
+    if move == BossMove.SICKLE and dangerous:
+        if ground and abs(dx) < 10:
+            return MacroAction.JUMP_RIGHT if dx >= 0 else MacroAction.JUMP_LEFT
+        return away
 
     return approach_action(state, require_facing=True)

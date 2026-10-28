@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from agent import MACRO_ACTION_NAMES
+from agent.action import BUTTON_ORDER, NUM_BUTTONS, is_intro_state
 from env_worker import env_worker_main
 from monitor import TrainingMonitor
 from obs_norm import RunningNorm
@@ -27,9 +27,9 @@ from rollout_buffer import VectorRolloutBuffer
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CHECKPOINT_FORMAT = 5
+CHECKPOINT_FORMAT = 8
 MODEL_HIDDEN = 256
-ACTION_SIZES = [len(MACRO_ACTION_NAMES)]
+ACTION_SIZES = [1] * NUM_BUTTONS
 
 GAMMA = 0.9955
 GAE_LAMBDA = 0.95
@@ -140,7 +140,7 @@ def default_steps_per_env(num_envs):
 
 
 def prepare_fight(port):
-    """Use the training save's Pure Vessel statue to start a fresh fight."""
+    """Use the training save's Traitor Lord statue to start a fresh fight."""
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=4.0) as sock:
             sock.settimeout(4.0)
@@ -168,14 +168,14 @@ def prepare_fight(port):
                         )
                     center_x = (box[0] + box[2]) / 2
                     center_y = (box[1] + box[3]) / 2
-                    if not (180 <= center_x <= 188 and 32 <= center_y <= 39):
+                    if not (184 <= center_x <= 192 and 4 <= center_y <= 9):
                         raise RuntimeError(
                             f"port {port}: boss is absent and knight is at "
                             f"({center_x:.1f}, {center_y:.1f}), outside the "
-                            "known Pure Vessel statue position. Stand at the "
+                            "known Traitor Lord statue position. Stand at the "
                             "statue with the training save."
                         )
-                    print(f"port {port}: entering Pure Vessel fight from statue", flush=True)
+                    print(f"port {port}: entering Traitor Lord fight from statue", flush=True)
                     for attempt in range(1, 4):
                         command("TAP up 120")
                         time.sleep(1.2)
@@ -202,8 +202,8 @@ def prepare_fight(port):
                 # The HP object appears long before the intro ends. Keep the
                 # game moving without policy actions until its first real
                 # combat state, then freeze for the workers' setup.
-                if fsm.startswith("Intro") and speed == 0.0:
-                    command("SPEED 2")
+                if is_intro_state(fsm) and speed == 0.0:
+                    command("SPEED 1")
                 ready_deadline = time.perf_counter() + 25.0
                 while time.perf_counter() < ready_deadline:
                     box, boss_hp, knight_hp, speed, fsm, has_boss_box = snapshot()
@@ -212,7 +212,7 @@ def prepare_fight(port):
                             f"port {port}: fight ended during boss intro "
                             f"(boss_hp={boss_hp}, knight_hp={knight_hp})."
                         )
-                    if fsm and not fsm.startswith("Intro") and has_boss_box:
+                    if fsm and not is_intro_state(fsm) and has_boss_box:
                         break
                     time.sleep(0.05)
                 else:
@@ -275,7 +275,7 @@ def prepare_fights(ports):
                 problems.append(str(exc))
     if problems:
         raise SystemExit(
-            "Could not prepare every Pure Vessel fight:\n"
+            "Could not prepare every Traitor Lord fight:\n"
             + "\n".join(problems)
             + "\nAny ready fight remains frozen; fix the other window and rerun."
         )
@@ -289,7 +289,7 @@ def parse_args():
     parser.add_argument("--control-hz", type=int, default=10)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--episode-time-limit", type=float, default=60.0)
-    parser.add_argument("--game-speed", type=float, default=2.0)
+    parser.add_argument("--game-speed", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument("--steps-per-env", type=int, default=0,
@@ -330,7 +330,7 @@ def main():
     steps_per_env = args.steps_per_env or default_steps_per_env(num_envs)
     # Boss relative position now uses the body-box centre rather than the
     # HealthManager root. Keep those observation semantics in a new run.
-    run_name = "body_center_v3_" + "_".join(str(port) for port in args.ports)
+    run_name = "traitor_exclusive_v2_" + "_".join(str(port) for port in args.ports)
     run_dir = os.path.abspath(args.run_dir or os.path.join(SCRIPT_DIR, "runs", run_name))
     os.makedirs(run_dir, exist_ok=True)
     checkpoint_path = os.path.join(run_dir, "ppo_checkpoint.pth")
@@ -369,11 +369,12 @@ def main():
         pool.close()
         raise RuntimeError("environment observation shapes do not match")
 
-    model = ActorCritic(state_size, ACTION_SIZES, hidden=MODEL_HIDDEN)
+    model = ActorCritic(state_size, ACTION_SIZES, hidden=MODEL_HIDDEN,
+                        bernoulli=True, exclusive_directions=True)
     optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
     obs_norm = RunningNorm(state_size)
     buffer = VectorRolloutBuffer(
-        steps_per_env, num_envs, state_size, num_action_heads=1
+        steps_per_env, num_envs, state_size, num_action_heads=NUM_BUTTONS
     )
 
     start_update = 0
@@ -389,9 +390,10 @@ def main():
             "format_version": CHECKPOINT_FORMAT,
             "observation_size": state_size,
             "frame_stack": args.frame_stack,
-            "action_names": list(MACRO_ACTION_NAMES),
+            "action_names": list(BUTTON_ORDER),
             "model_hidden": MODEL_HIDDEN,
             "num_envs": num_envs,
+            "action_distribution": "exclusive_directions_v1",
         }
         mismatches = [
             f"{key}: checkpoint={checkpoint.get(key)!r}, expected={wanted!r}"
@@ -424,8 +426,9 @@ def main():
         try:
             monitor = TrainingMonitor(
                 target_kl=TARGET_KL,
-                action_sizes=ACTION_SIZES,
-                action_labels=["macro"],
+                action_sizes=[3, 1, 3, 1, 2, 2, 2],
+                action_labels=["horizontal", "paired", "vertical", "paired",
+                               "attack", "jump", "dash"],
                 history_path=history_path,
             )
         except Exception as exc:
@@ -474,7 +477,7 @@ def main():
             "event": "episode", "episode": episode,
             "global_step": global_step, "env": env_index,
             "reward": episode_rewards[env_index], "steps": episode_steps[env_index],
-            "actions": {name: episode_actions[env_index][name] for name in MACRO_ACTION_NAMES},
+            "actions": {name: episode_actions[env_index][name] for name in BUTTON_ORDER},
             "reward_parts": dict(episode_reward_parts[env_index]),
         })
         print(
@@ -494,10 +497,11 @@ def main():
             "format_version": CHECKPOINT_FORMAT,
             "observation_size": state_size,
             "frame_stack": args.frame_stack,
-            "action_names": list(MACRO_ACTION_NAMES),
+            "action_names": list(BUTTON_ORDER),
             "action_sizes": ACTION_SIZES,
             "model_hidden": MODEL_HIDDEN,
             "num_envs": num_envs,
+            "action_distribution": "exclusive_directions_v1",
             "ports": list(args.ports),
             "steps_per_env": steps_per_env,
             "control_hz": args.control_hz,
@@ -535,7 +539,7 @@ def main():
                 def dispatch_action(env_index):
                     obs = observe(raw_observations[env_index])
                     action, logprobs, _, value = model.act(obs)
-                    pool.send(env_index, "step", action[0])
+                    pool.send(env_index, "step", action)
                     pending[pool.connections[env_index]] = {
                         "kind": "step",
                         "env": env_index,
@@ -597,7 +601,9 @@ def main():
                         global_step += 1
                         episode_rewards[env_index] += reward
                         episode_steps[env_index] += 1
-                        episode_actions[env_index][MACRO_ACTION_NAMES[meta["action"][0]]] += 1
+                        for index, name in enumerate(BUTTON_ORDER):
+                            if meta["action"][index]:
+                                episode_actions[env_index][name] += 1
                         episode_reward_parts[env_index].update(info.get("reward_parts", {}))
 
                         if done:

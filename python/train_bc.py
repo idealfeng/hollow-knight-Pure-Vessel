@@ -1,4 +1,4 @@
-"""Behavior-clone the 12-action PPO actor from synchronized live demonstrations.
+"""Behavior-clone the seven-button PPO actor from synchronized demonstrations.
 
 The split is by complete episode, so nearby stacked frames from the same
 fight cannot leak into validation. The output is a normal multi-env PPO
@@ -14,12 +14,39 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from agent.action import MACRO_ACTION_NAMES
+from agent.action import BUTTON_ORDER, NUM_BUTTONS
 from main_multi import (ACTION_SIZES, CHECKPOINT_FORMAT, GAMMA, LR, MODEL_HIDDEN, REWARD_SCALE,
                         default_steps_per_env)
 from enviroment.state_to_vector import OBSERVATION_SIZE
 from obs_norm import RunningNorm
 from ppo_model import ActorCritic
+
+
+def button_loss(logits, actions, pos_weight):
+    """Match the policy's two categorical directions and three binary buttons."""
+    if torch.any((actions[:, 0] > 0) & (actions[:, 1] > 0)) or torch.any(
+            (actions[:, 2] > 0) & (actions[:, 3] > 0)):
+        raise ValueError("demonstrations contain opposing directions")
+    zero = torch.zeros_like(logits[0])
+    horizontal = torch.cat((zero, logits[0], logits[1]), dim=1)
+    vertical = torch.cat((zero, logits[2], logits[3]), dim=1)
+    h_target = actions[:, 0].long() + 2 * actions[:, 1].long()
+    v_target = actions[:, 2].long() + 2 * actions[:, 3].long()
+    binary = torch.cat(logits[4:], dim=1)
+    return (F.cross_entropy(horizontal, h_target)
+            + F.cross_entropy(vertical, v_target)
+            + F.binary_cross_entropy_with_logits(binary, actions[:, 4:],
+                                                 pos_weight=pos_weight[4:]))
+
+
+def button_predictions(logits):
+    zero = torch.zeros_like(logits[0])
+    horizontal = torch.cat((zero, logits[0], logits[1]), dim=1).argmax(dim=1)
+    vertical = torch.cat((zero, logits[2], logits[3]), dim=1).argmax(dim=1)
+    binary = torch.cat(logits[4:], dim=1) > 0
+    return torch.stack((horizontal == 1, horizontal == 2,
+                        vertical == 1, vertical == 2,
+                        binary[:, 0], binary[:, 1], binary[:, 2]), dim=1)
 
 
 def parse_args():
@@ -40,21 +67,16 @@ def parse_args():
 
 
 def migrate_observations(observations, source_format):
-    """Format 4 already stores all inputs needed to correct the facing flag.
+    """Validate a stacked observation matrix and pass it through unchanged.
 
-    Recompute it in every stacked frame, including absent/zero-offset bosses.
-    This does not alter the teacher labels or the recorded trajectories.
+    Older demonstrations used a different observation or action space and cannot
+    be migrated by relabelling; they are rejected rather than silently
+    reinterpreted.
     """
     obs = np.array(observations, dtype=np.float32, copy=True)
     if obs.ndim != 2 or obs.shape[1] % OBSERVATION_SIZE:
         raise ValueError("invalid stacked observation width")
-    if source_format == 4 and CHECKPOINT_FORMAT == 5:
-        frames = obs.reshape(len(obs), -1, OBSERVATION_SIZE)
-        dx = frames[:, :, 24]
-        left = frames[:, :, 30] > 0
-        frames[:, :, 31] = ((frames[:, :, 22] > 0)
-                           & (((dx > 0) & left) | ((dx < 0) & ~left)))
-    elif source_format != CHECKPOINT_FORMAT:
+    if source_format != CHECKPOINT_FORMAT:
         raise ValueError(f"unsupported demonstration format {source_format}")
     return obs
 
@@ -80,8 +102,8 @@ def load_demonstrations(paths):
         with np.load(path, allow_pickle=False) as data:
             current_width = int(data["observation_size"])
             source_format = int(data["format_version"])
-            if (source_format not in (4, CHECKPOINT_FORMAT)
-                    or list(data["action_names"]) != list(MACRO_ACTION_NAMES)):
+            if (source_format != CHECKPOINT_FORMAT
+                    or list(data["action_names"]) != list(BUTTON_ORDER)):
                 raise ValueError(f"{path}: demonstration format/action names mismatch")
             if str(data["policy"]) not in ("approach_aligned", "human"):
                 raise ValueError(f"{path}: expected approach_aligned or human demonstrations")
@@ -91,11 +113,11 @@ def load_demonstrations(paths):
             rewards = np.asarray(data["rewards"], dtype=np.float32)
             dones = np.asarray(data["dones"], dtype=bool)
             if (obs.ndim != 2 or obs.shape[1] != current_width
-                    or act.shape != (len(obs),) or episodes.shape != (len(obs),)
+                    or act.shape != (len(obs), NUM_BUTTONS) or episodes.shape != (len(obs),)
                     or len(obs) == 0 or not np.isfinite(obs).all()
                     or rewards.shape != (len(obs),) or dones.shape != (len(obs),)
                     or not np.isfinite(rewards).all()
-                    or np.any(act < 0) or np.any(act >= len(MACRO_ACTION_NAMES))):
+                    or np.any(act < 0) or np.any(act > 1)):
                 raise ValueError(f"{path}: invalid demonstration arrays")
             if width is not None and current_width != width:
                 raise ValueError("demonstration observation widths differ")
@@ -130,20 +152,18 @@ def main():
     normalizer.update(observations[train_mask])
     train_obs = torch.as_tensor(normalizer.normalize(observations[train_mask]))
     val_obs = torch.as_tensor(normalizer.normalize(observations[val_mask]))
-    train_actions = torch.as_tensor(actions[train_mask], dtype=torch.long)
-    val_actions = torch.as_tensor(actions[val_mask], dtype=torch.long)
+    train_actions = torch.as_tensor(actions[train_mask], dtype=torch.float32)
+    val_actions = torch.as_tensor(actions[val_mask], dtype=torch.float32)
 
     model = ActorCritic(observations.shape[1], ACTION_SIZES,
-                        hidden=MODEL_HIDDEN)
+                        hidden=MODEL_HIDDEN, bernoulli=True,
+                        exclusive_directions=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, eps=1e-5)
-    counts = np.bincount(actions[train_mask], minlength=len(MACRO_ACTION_NAMES))
-    weights = np.ones(len(MACRO_ACTION_NAMES), dtype=np.float32)
-    present = counts > 0
-    weights[present] = np.sqrt(counts[present].sum()
-                               / (present.sum() * counts[present]))
-    weights = np.minimum(weights, 3.0)
-    weights[present] /= weights[present].mean()
-    class_weights = torch.as_tensor(weights)
+    # Per-button positive-sample weighting: attack/dash are 0 far more often
+    # than 1, so a plain BCE would learn "always 0". Cap it so one rare button
+    # cannot dominate the loss.
+    pos_frac = train_actions.mean(dim=0).clamp(min=1e-3)
+    pos_weight = ((1.0 - pos_frac) / pos_frac).clamp(max=10.0)
 
     best_loss = float("inf")
     best_model = None
@@ -156,8 +176,7 @@ def main():
         for start in range(0, len(order), args.batch_size):
             indices = order[start:start + args.batch_size]
             logits, _ = model(train_obs[indices])
-            loss = F.cross_entropy(logits[0], train_actions[indices],
-                                   weight=class_weights)
+            loss = button_loss(logits, train_actions[indices], pos_weight)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -165,8 +184,8 @@ def main():
         model.eval()
         with torch.no_grad():
             logits, _ = model(val_obs)
-            val_loss = F.cross_entropy(logits[0], val_actions).item()
-            val_accuracy = (logits[0].argmax(dim=-1) == val_actions).float().mean().item()
+            val_loss = button_loss(logits, val_actions, pos_weight).item()
+            val_accuracy = (button_predictions(logits) == val_actions.bool()).float().mean().item()
         print(f"epoch {epoch:2d}: val loss={val_loss:.4f} "
               f"accuracy={val_accuracy:.1%}", flush=True)
         if val_loss < best_loss - 1e-4:
@@ -211,16 +230,16 @@ def main():
     print(f"critic validation MSE={best_critic_loss:.4f}; actor weights preserved", flush=True)
     with torch.no_grad():
         best_logits, _ = model(val_obs)
-        predictions = best_logits[0].argmax(dim=-1).numpy()
-    validation_counts = np.bincount(val_actions.numpy(), minlength=len(MACRO_ACTION_NAMES))
+        predictions = button_predictions(best_logits).numpy()
+    val_targets = val_actions.numpy().astype(bool)
     per_action = {
         name: {
-            "train_count": int(counts[i]),
-            "validation_count": int(validation_counts[i]),
-            "validation_recall": (float((predictions[val_actions.numpy() == i] == i).mean())
-                                  if validation_counts[i] else None),
+            "train_ones": int(train_actions[:, i].sum()),
+            "validation_ones": int(val_actions[:, i].sum()),
+            "validation_recall": (float((predictions[:, i][val_targets[:, i]]).mean())
+                                  if val_targets[:, i].any() else None),
         }
-        for i, name in enumerate(MACRO_ACTION_NAMES)
+        for i, name in enumerate(BUTTON_ORDER)
     }
     # PPO has a different objective. Start its Adam moments from zero rather
     # than carrying cross-entropy momentum into the first policy update.
@@ -229,9 +248,10 @@ def main():
         "format_version": CHECKPOINT_FORMAT,
         "observation_size": observations.shape[1],
         "frame_stack": observations.shape[1] // OBSERVATION_SIZE,
-        "action_names": list(MACRO_ACTION_NAMES),
+        "action_names": list(BUTTON_ORDER),
         "action_sizes": ACTION_SIZES,
         "model_hidden": MODEL_HIDDEN,
+        "action_distribution": "exclusive_directions_v1",
         "num_envs": len(args.ports),
         "ports": list(args.ports),
         "steps_per_env": default_steps_per_env(len(args.ports)),
@@ -245,7 +265,7 @@ def main():
         "episode": 0,
         "pretraining": {
             "method": "behavior_cloning",
-            "teacher": "approach_aligned",
+            "teacher": "human",
             "demos": [os.path.abspath(path) for path in args.demos],
             "train_samples": int(train_mask.sum()),
             "validation_samples": int(val_mask.sum()),

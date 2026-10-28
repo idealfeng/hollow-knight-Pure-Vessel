@@ -6,7 +6,7 @@ param(
     [ValidateRange(5, 30)]
     [int]$ControlHz = 10,
     [ValidateRange(0.5, 4.0)]
-    [double]$GameSpeed = 2.0,
+    [double]$GameSpeed = 1.0,
     [ValidateRange(0, 8192)]
     [int]$StepsPerEnv = 0,
     [ValidateRange(1, 1000000)]

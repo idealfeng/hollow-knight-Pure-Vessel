@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 
@@ -18,12 +19,40 @@ namespace KnightPos
 
     public class DiagnosticsOverlay : MonoBehaviour
     {
-        private const string PureVesselObjectName = "HK Prime";
-        private const string PureVesselSceneName = "GG_Hollow_Knight";
+        // Default target boss. Overridable per game instance via
+        // --hollowrl-boss-name= and --hollowrl-boss-scene= so switching bosses
+        // (e.g. to Traitor Lord) does not require a recompile.
+        private const string FallbackObjectName = "HK Prime";
+        private const string FallbackSceneName = "GG_Hollow_Knight";
         private const float BossSearchInterval = 0.25f;
+
+        private readonly string targetObjectName = ResolveTargetBossName();
+        private readonly string targetSceneName = ResolveTargetBossScene();
 
         private HealthManager cachedBoss;
         private float nextBossSearchAt;
+
+        private static string ResolveTargetBossName()
+        {
+            foreach (string arg in Environment.GetCommandLineArgs())
+            {
+                const string prefix = "--hollowrl-boss-name=";
+                if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return arg.Substring(prefix.Length);
+            }
+            return FallbackObjectName;
+        }
+
+        private static string ResolveTargetBossScene()
+        {
+            foreach (string arg in Environment.GetCommandLineArgs())
+            {
+                const string prefix = "--hollowrl-boss-scene=";
+                if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return arg.Substring(prefix.Length);
+            }
+            return FallbackSceneName;
+        }
 
         private struct HazardMotion
         {
@@ -148,11 +177,11 @@ namespace KnightPos
 
         public HealthManager GetBoss()
         {
-            // Live diagnostics confirmed Pure Vessel is the object named
-            // "HK Prime" in scene "GG_Hollow_Knight". Keep the reference
-            // while it is alive, then reacquire after a death/retry creates a
-            // new Unity instance. Outside the arena, limit scene-wide scans.
-            if (IsPureVessel(cachedBoss))
+            // Keep the reference while the boss is alive, then reacquire after
+            // a death/retry creates a new Unity instance. Outside the arena,
+            // limit scene-wide scans. Target identity is configurable via the
+            // --hollowrl-boss-name/--hollowrl-boss-scene launch args.
+            if (IsTargetBoss(cachedBoss))
                 return cachedBoss;
 
             cachedBoss = null;
@@ -162,7 +191,7 @@ namespace KnightPos
             nextBossSearchAt = Time.unscaledTime + BossSearchInterval;
             foreach (HealthManager candidate in FindObjectsOfType<HealthManager>())
             {
-                if (IsPureVessel(candidate))
+                if (IsTargetBoss(candidate))
                 {
                     cachedBoss = candidate;
                     break;
@@ -172,12 +201,12 @@ namespace KnightPos
             return cachedBoss;
         }
 
-        private static bool IsPureVessel(HealthManager candidate)
+        private bool IsTargetBoss(HealthManager candidate)
         {
             return candidate != null
                 && candidate.gameObject.activeInHierarchy
-                && candidate.gameObject.name == PureVesselObjectName
-                && candidate.gameObject.scene.name == PureVesselSceneName;
+                && candidate.gameObject.name == targetObjectName
+                && candidate.gameObject.scene.name == targetSceneName;
         }
 
         // These three used to each call GetBoss() independently, so a single

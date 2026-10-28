@@ -7,6 +7,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$activeTrainer = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+    Where-Object { $_.CommandLine -match 'main_multi\.py' })
+if ($activeTrainer.Count -gt 0) {
+    throw 'A PPO trainer is still running. Stop it normally before recording human play.'
+}
 $pythonExe = Join-Path $PSScriptRoot 'python\.venv\Scripts\python.exe'
 $recorder = Join-Path $PSScriptRoot 'python\record_human.py'
 $recordArguments = @('-u', $recorder, '--port', "$Port", '--episodes', "$Episodes")

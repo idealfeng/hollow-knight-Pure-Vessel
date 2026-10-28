@@ -6,11 +6,14 @@ param(
     [ValidateRange(30, 120)]
     [int]$Fps = 30,
     [ValidateRange(0.5, 4.0)]
-    [double]$GameSpeed = 2.0,
+    [double]$GameSpeed = 1.0,
     [ValidateRange(320, 1920)]
     [int]$Width = 640,
     [ValidateRange(180, 1080)]
-    [int]$Height = 360
+    [int]$Height = 360,
+    [string]$BossName = "Mantis Traitor Lord",
+    [string]$BossScene = "GG_Traitor_Lord",
+    [string]$BossFsm = "Mantis"
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +52,14 @@ for ($index = 0; $index -lt $GameDirs.Count; $index++) {
         if (-not $existingProcess -or $existingProcess.Path -ne $exe) {
             throw "Port $port is already owned by PID $existingPid, not by $exe"
         }
+        $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $existingPid").CommandLine
+        if (-not $commandLine -or
+            -not $commandLine.Contains("--hollowrl-boss-name=") -or
+            -not $commandLine.Contains($BossName) -or
+            -not $commandLine.Contains("--hollowrl-boss-scene=$BossScene") -or
+            -not $commandLine.Contains("--hollowrl-boss-fsm=$BossFsm")) {
+            throw "Port $port is running with different Boss settings. Close that game and relaunch it for $BossName."
+        }
         $launched += [pscustomobject]@{
             Index = $index
             Port = $port
@@ -75,6 +86,9 @@ for ($index = 0; $index -lt $GameDirs.Count; $index++) {
         "--hollowrl-port=$($Ports[$index])",
         "--hollowrl-fps=$Fps",
         "--hollowrl-speed=$GameSpeed",
+        "--hollowrl-boss-name=`"$BossName`"",
+        "--hollowrl-boss-scene=$BossScene",
+        "--hollowrl-boss-fsm=$BossFsm",
         "-screen-fullscreen", "0",
         "-screen-width", "$Width",
         "-screen-height", "$Height"

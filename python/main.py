@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from agent import MACRO_ACTION_NAMES
+from agent.action import BUTTON_ORDER, NUM_BUTTONS
 from hollow_knight_env import HollowKnightEnv, DEFAULT_CONTROL_HZ, DEFAULT_FRAME_STACK
 from monitor import TrainingMonitor
 from obs_norm import RunningNorm
@@ -21,13 +21,13 @@ from rollout_buffer import RolloutBuffer
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_PATH = os.path.join(SCRIPT_DIR, "ppo_checkpoint.pth")
-CHECKPOINT_FORMAT = 2
+CHECKPOINT_FORMAT = 4
 
 # Environment -----------------------------------------------------------
 CONTROL_HZ = int(os.environ.get("HOLLOWRL_CONTROL_HZ", DEFAULT_CONTROL_HZ))
 FRAME_STACK = int(os.environ.get("HOLLOWRL_FRAME_STACK", DEFAULT_FRAME_STACK))
 EPISODE_TIME_LIMIT = 60.0
-ACTION_SIZES = [len(MACRO_ACTION_NAMES)]
+ACTION_SIZES = [1] * NUM_BUTTONS
 MODEL_HIDDEN = 256
 
 env = HollowKnightEnv(
@@ -57,9 +57,10 @@ VALUE_CLIP_EPS = 1.0
 REWARD_SCALE = 0.05
 SAVE_EVERY_UPDATES = 5
 
-model = ActorCritic(STATE_SIZE, ACTION_SIZES, hidden=MODEL_HIDDEN)
+model = ActorCritic(STATE_SIZE, ACTION_SIZES, hidden=MODEL_HIDDEN,
+                    bernoulli=True, exclusive_directions=True)
 optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
-buffer = RolloutBuffer(ROLLOUT_STEPS, STATE_SIZE, num_action_heads=1)
+buffer = RolloutBuffer(ROLLOUT_STEPS, STATE_SIZE, num_action_heads=NUM_BUTTONS)
 obs_norm = RunningNorm(STATE_SIZE)
 
 start_update = 0
@@ -73,7 +74,8 @@ def _validate_checkpoint(checkpoint):
         "format_version": CHECKPOINT_FORMAT,
         "observation_size": STATE_SIZE,
         "frame_stack": FRAME_STACK,
-        "action_names": list(MACRO_ACTION_NAMES),
+        "action_names": list(BUTTON_ORDER),
+        "action_distribution": "exclusive_directions_v1",
         "model_hidden": MODEL_HIDDEN,
     }
     mismatches = []
@@ -103,8 +105,9 @@ if resumed:
 
 monitor = TrainingMonitor(
     target_kl=TARGET_KL,
-    action_sizes=ACTION_SIZES,
-    action_labels=["macro"],
+    action_sizes=[3, 1, 3, 1, 2, 2, 2],
+    action_labels=["horizontal", "paired", "vertical", "paired",
+                   "attack", "jump", "dash"],
 )
 monitor.set_run_info(resumed, start_update=start_update, start_episode=episode)
 best_reward = max(monitor.rewards) if monitor.rewards else float("-inf")
@@ -140,7 +143,8 @@ def save_checkpoint(update):
         "format_version": CHECKPOINT_FORMAT,
         "observation_size": STATE_SIZE,
         "frame_stack": FRAME_STACK,
-        "action_names": list(MACRO_ACTION_NAMES),
+        "action_names": list(BUTTON_ORDER),
+        "action_distribution": "exclusive_directions_v1",
         "action_sizes": ACTION_SIZES,
         "model_hidden": MODEL_HIDDEN,
         "control_hz": CONTROL_HZ,
@@ -169,7 +173,7 @@ def train_loop():
                 obs = observe(raw_obs)
                 action, logprobs_per_head, _, value = model.act(obs)
 
-                next_raw, reward, terminated, truncated, info = env.step(action[0])
+                next_raw, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
 
                 episode_reward += reward

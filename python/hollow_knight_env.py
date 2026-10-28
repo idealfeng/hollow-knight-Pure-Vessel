@@ -14,7 +14,7 @@ import numpy as np
 
 import controls
 import game_state
-from agent.action import MACRO_ACTION_NAMES, execute_macro_action
+from agent.action import NUM_BUTTONS, execute_buttons
 from agent.reward import RewardTracker
 from enviroment import OBSERVATION_SIZE, get_state, is_done, reset_environment, state_to_vector
 
@@ -53,7 +53,7 @@ class FrameStacker:
 
 
 class HollowKnightEnv(gym.Env):
-    """A fixed-rate, vector-observation Pure Vessel environment."""
+    """A fixed-rate, vector-observation boss fight environment."""
 
     metadata = {"render_modes": []}
 
@@ -70,7 +70,7 @@ class HollowKnightEnv(gym.Env):
         self.reuse_live_fight = bool(reuse_live_fight)
 
         self.stacker = FrameStacker(OBSERVATION_SIZE, int(frame_stack))
-        self.action_space = gym.spaces.Discrete(len(MACRO_ACTION_NAMES))
+        self.action_space = gym.spaces.MultiBinary(NUM_BUTTONS)
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -81,6 +81,7 @@ class HollowKnightEnv(gym.Env):
         self.reward_tracker = RewardTracker()
         self.state = None
         self.raw_observation = None
+        self.prev_buttons = None
         self.episode_steps = 0
         self.min_boss_hp = None
         self._has_reset_once = False
@@ -162,7 +163,7 @@ class HollowKnightEnv(gym.Env):
             hp = None if current is None else current.get("boss_health")
             raise RuntimeError(
                 f"port {port}: first reset requires an active boss fight "
-                f"(boss_health={hp}). Enter the Pure Vessel arena before "
+                f"(boss_health={hp}). Enter the Traitor Lord arena before "
                 "starting training."
             )
 
@@ -178,7 +179,7 @@ class HollowKnightEnv(gym.Env):
             self.last_reset_attempts = int(reset_details["attempts"])
             self.total_reset_retries += max(self.last_reset_attempts - 1, 0)
             if not reset_details["ok"]:
-                raise RuntimeError("could not reset Pure Vessel fight")
+                raise RuntimeError("could not reset boss fight")
         else:
             self.last_reset_attempts = 0
             # Reusing a fight on worker startup skips reset_environment(),
@@ -196,6 +197,7 @@ class HollowKnightEnv(gym.Env):
         self.episode_steps = 0
         self.min_boss_hp = state["boss_health"]
         self.reward_tracker.reset()
+        self.prev_buttons = None
         self._has_reset_once = True
         self.last_reset_seconds = time.perf_counter() - reset_started
         self.total_reset_seconds += self.last_reset_seconds
@@ -214,7 +216,7 @@ class HollowKnightEnv(gym.Env):
 
         previous = self.state
         step_started = time.perf_counter()
-        execute_macro_action(action)
+        self.prev_buttons = execute_buttons(action, self.prev_buttons)
         action_seconds = time.perf_counter() - step_started
 
         next_step = self.episode_steps + 1

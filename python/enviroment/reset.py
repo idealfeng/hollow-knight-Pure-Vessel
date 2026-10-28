@@ -11,6 +11,7 @@ import time
 
 import controls
 import game_state as game_reader
+from agent.action import is_intro_state
 
 # Waits before the menu is reachable. Both are blind sleeps rather than waits
 # on observed state: nothing the mod reports distinguishes "death animation
@@ -75,7 +76,7 @@ def state_is_combat_ready():
     """The boss intro is over and a real body collider is available."""
     return (state_is_live()
             and bool(game_reader.boss_control_state)
-            and not game_reader.boss_control_state.startswith("Intro")
+            and not is_intro_state(game_reader.boss_control_state)
             and game_reader.boss_box is not None)
 
 

@@ -5,13 +5,12 @@ small amount of history required to decide whether a nail swing really missed
 and whether an ACTIVE boss phase ended without damage.
 """
 
-from agent.action import PureVesselMove, PureVesselPhase, boss_move, boss_phase
+from agent.action import BossMove, BossPhase, boss_move, boss_phase
 from agent.calc import box_distance
 
 NAIL_DAMAGE_REFERENCE = 33.0
 HIT_REWARD_PER_NAIL = 1.0
 
-STAGGER = 10.0
 BOSS_DEFEATED = 100.0
 CLEAN_DODGE = 0.05
 EMPTY_ATTACK = -0.03
@@ -29,9 +28,8 @@ DAMAGE_PER_MASK = 3.0
 DEATH = -20.0
 
 _APPROACH_PHASES = {
-    PureVesselPhase.NEUTRAL,
-    PureVesselPhase.RECOVERY,
-    PureVesselPhase.STUN,
+    BossPhase.NEUTRAL,
+    BossPhase.RECOVERY,
 }
 
 
@@ -70,11 +68,6 @@ def calculate_reward(previous_state, current_state, done, timed_out=False,
         damage_dealt = prev_hp - cur_hp
         add(damage_dealt / NAIL_DAMAGE_REFERENCE * HIT_REWARD_PER_NAIL,
             "boss damage")
-
-    if (hp_valid
-            and current_move == PureVesselMove.STUN
-            and previous_move != PureVesselMove.STUN):
-        add(STAGGER, "boss staggered")
 
     if done and prev_hp > 0 and cur_hp == 0:
         add(BOSS_DEFEATED, "boss defeated")
@@ -156,23 +149,19 @@ class RewardTracker:
         previous_phase = boss_phase(previous_state)
         current_phase = boss_phase(current_state)
         if self._active_damage is None:
-            if (previous_phase != PureVesselPhase.ACTIVE
-                    and current_phase == PureVesselPhase.ACTIVE):
+            if (previous_phase != BossPhase.ACTIVE
+                    and current_phase == BossPhase.ACTIVE):
                 self._active_damage = previous_state.get("damage_count", 0)
         elif current_state.get("damage_count", 0) > self._active_damage:
             self._active_damage = -1
 
         if (self._active_damage is not None
-                and previous_phase == PureVesselPhase.ACTIVE
-                and current_phase != PureVesselPhase.ACTIVE):
+                and previous_phase == BossPhase.ACTIVE
+                and current_phase != BossPhase.ACTIVE):
             if self._active_damage >= 0:
                 successful_dodge = True
                 self.dodges += 1
             self._active_damage = None
-
-        if (boss_move(current_state) == PureVesselMove.STUN
-                and boss_move(previous_state) != PureVesselMove.STUN):
-            self.staggers += 1
 
         reward, self.last_breakdown = calculate_reward(
             previous_state,

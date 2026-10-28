@@ -11,6 +11,11 @@ $builtDll = Join-Path $PSScriptRoot 'unity_mod\HollowRL\bin\Release\HollowRL.dll
 $targetDll = Join-Path $gameRoot 'BepInEx\plugins\HollowRL\HollowRL.dll'
 if (-not (Test-Path -LiteralPath $builtDll)) { throw "Build the Mod first: $builtDll" }
 if (-not (Test-Path -LiteralPath $gameExe)) { throw "Game executable missing: $gameExe" }
+$activeTrainer = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+    Where-Object { $_.CommandLine -match 'main_multi\.py' })
+if ($activeTrainer.Count -gt 0) {
+    throw 'A PPO trainer is still running. Stop it normally and keep its checkpoint before preparing human recording.'
+}
 
 # Only restart the selected installation. Other instances remain available.
 $targetProcesses = @(Get-Process hollow_knight -ErrorAction SilentlyContinue |

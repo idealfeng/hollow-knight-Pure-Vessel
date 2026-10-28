@@ -5,6 +5,6 @@ $secondary = "D:\HollowRL-instances\env2"
     -GameDirs $primary,$secondary `
     -Ports 9001,9002 `
     -Fps 60 `
-    -GameSpeed 2.0 `
+    -GameSpeed 1.0 `
     -Width 640 `
     -Height 360

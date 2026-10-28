@@ -106,194 +106,151 @@ class BossAttack(IntEnum):
         return self == BossAttack.ACTIVE
 
 
-class PureVesselMove(IntEnum):
-    """Pure Vessel's moves, keyed off the Control FSM's ActiveStateName."""
+class BossMove(IntEnum):
+    """Traitor Lord's moves, keyed off the Mantis FSM's ActiveStateName."""
 
     NONE = 0
-    TRIPLE_SLASH = 1
-    DASH = 2
-    DAGGER = 3
-    PLUME = 4
-    DSTAB = 5
-    COUNTER = 6
-    FOCUS = 7
-    TENDRIL = 8
-    TELEPORT = 9
-    STUN = 10
-    EVADE = 11
+    DASH = 1        # 横向冲锋：地面冲刺/挥砍突进
+    DIVE = 2        # 跳起来斜冲锋：空中俯冲
+    SHOCKWAVE = 3   # 放波：砸地冲击波
+    SICKLE = 4      # 放飞镖：回旋飞刀
 
 
-# Control FSM ActiveStateName -> move. Attack-relevant states only; anything
-# else (Idle, Intro, Turn Anim, Recover, Pause, ...) falls through to NONE.
+# Mantis FSM ActiveStateName -> move. Attack-relevant states only; anything
+# else (Idle, Walk, Turn, Feint, Intro/roar, ...) falls through to NONE.
 _FSM_TO_MOVE = {
-    "Slash1 Antic": PureVesselMove.TRIPLE_SLASH,
-    "Slash1": PureVesselMove.TRIPLE_SLASH,
-    "Slash1 Recover": PureVesselMove.TRIPLE_SLASH,
-    "Slash2 Recover": PureVesselMove.TRIPLE_SLASH,
-    "Slash 2": PureVesselMove.TRIPLE_SLASH,
-    "Slash 3": PureVesselMove.TRIPLE_SLASH,
-    "Slash3 Recover": PureVesselMove.TRIPLE_SLASH,
-    "Dash Antic": PureVesselMove.DASH,
-    "Dash": PureVesselMove.DASH,
-    "Dash Recover": PureVesselMove.DASH,
-    "SmallShot Antic": PureVesselMove.DAGGER,
-    "SmallShot LowHigh": PureVesselMove.DAGGER,
-    "SmallShot Recover": PureVesselMove.DAGGER,
-    "Plume Up": PureVesselMove.PLUME,
-    "Plume Pause": PureVesselMove.PLUME,
-    "Burst Pause": PureVesselMove.PLUME,
-    "Dstab Antic": PureVesselMove.DSTAB,
-    "Dstab Jump": PureVesselMove.DSTAB,
-    "Dstab Air": PureVesselMove.DSTAB,
-    "Stomp Antic": PureVesselMove.DSTAB,
-    "Stomp Down": PureVesselMove.DSTAB,
-    "Stomp Recover": PureVesselMove.DSTAB,
-    "Counter Stance": PureVesselMove.COUNTER,
-    "Counter Antic": PureVesselMove.COUNTER,
-    "Counter End": PureVesselMove.COUNTER,
-    "CS Antic": PureVesselMove.COUNTER,
-    "CSlash": PureVesselMove.COUNTER,
-    "CSlash Recover": PureVesselMove.COUNTER,
-    "Ball Up": PureVesselMove.FOCUS,
-    "Focus Charge": PureVesselMove.FOCUS,
-    "Focus Wait": PureVesselMove.FOCUS,
-    "Focus Burst": PureVesselMove.FOCUS,
-    "Hit End": PureVesselMove.FOCUS,
-    "Focus Recover": PureVesselMove.FOCUS,
-    "Tendril Antic": PureVesselMove.TENDRIL,
-    "Tendril Burst": PureVesselMove.TENDRIL,
-    "Tendril Start": PureVesselMove.TENDRIL,
-    "Tendril Hit": PureVesselMove.TENDRIL,
-    "T2": PureVesselMove.TENDRIL,
-    "T3": PureVesselMove.TENDRIL,
-    "Tendril Hit End": PureVesselMove.TENDRIL,
-    "Tendril Recover": PureVesselMove.TENDRIL,
-    "Tele Out": PureVesselMove.TELEPORT,
-    "Tele In": PureVesselMove.TELEPORT,
-    "Tele Cancel": PureVesselMove.TELEPORT,
-    "Stun": PureVesselMove.STUN,
-    "Stun Fall": PureVesselMove.STUN,
-    "Stun Air": PureVesselMove.STUN,
-    "StunHitUp": PureVesselMove.STUN,
-    "StunToIdle": PureVesselMove.STUN,
-    "Evade Antic": PureVesselMove.EVADE,
-    "Evade": PureVesselMove.EVADE,
-    "EvadeRecover": PureVesselMove.EVADE,
+    # 横向冲锋（地面 Dash / 挥砍突进）
+    "Attack Antic": BossMove.DASH,
+    "Attack 1": BossMove.DASH,
+    "Attack Swipe": BossMove.DASH,
+    "Attack Recover": BossMove.DASH,
+    # 跳起来斜冲锋（空中俯冲）
+    "Jump Antic": BossMove.DIVE,
+    "Jump": BossMove.DIVE,
+    "DSlash Antic": BossMove.DIVE,
+    "DSlash": BossMove.DIVE,
+    "Land": BossMove.DIVE,
+    # 放波（砸地冲击波）
+    "Slam Antic": BossMove.SHOCKWAVE,
+    "Slamming": BossMove.SHOCKWAVE,
+    "Waves": BossMove.SHOCKWAVE,
+    "Slam End": BossMove.SHOCKWAVE,
+    # 放飞镖（回旋飞刀）
+    "Sickle Antic": BossMove.SICKLE,
+    "Sickle Throw": BossMove.SICKLE,
+    "Throw?": BossMove.SICKLE,
+    "Sickle Throw Recover": BossMove.SICKLE,
+    "Sick Throw CD": BossMove.SICKLE,
 }
 
 
 def boss_move(state):
-    """Return Pure Vessel's current move from the Control FSM state."""
+    """Return Traitor Lord's current move from the Mantis FSM state."""
     fsm_state = state.get("boss_control_state", "")
-    return _FSM_TO_MOVE.get(fsm_state, PureVesselMove.NONE)
+    return _FSM_TO_MOVE.get(fsm_state, BossMove.NONE)
 
 
-class PureVesselPhase(IntEnum):
-    """Attack phase, keyed off the same Control FSM state (verified sequences)."""
+class BossPhase(IntEnum):
+    """Attack phase, keyed off the same Mantis FSM state (verified sequences)."""
 
     NEUTRAL = 0
     WINDUP = 1
     ACTIVE = 2
     RECOVERY = 3
-    STUN = 4
-    UNKNOWN = 5
+    UNKNOWN = 4
 
 
-# Control FSM ActiveStateName -> phase, from the verified state sequences in the
+# Mantis FSM ActiveStateName -> phase, from the verified state sequences in the
 # diagnostic TSVs. States NOT listed here fall through to UNKNOWN (never guessed
 # as a specific attack phase).
 _FSM_TO_PHASE = {
-    "Slash1 Antic": PureVesselPhase.WINDUP,
-    "Slash1": PureVesselPhase.ACTIVE,
-    "Slash1 Recover": PureVesselPhase.RECOVERY,
-    "Slash2 Recover": PureVesselPhase.RECOVERY,
-    "Slash 2": PureVesselPhase.ACTIVE,
-    "Slash 3": PureVesselPhase.ACTIVE,
-    "Slash3 Recover": PureVesselPhase.RECOVERY,
-    "Dash Antic": PureVesselPhase.WINDUP,
-    "Dash": PureVesselPhase.ACTIVE,
-    "Dash Recover": PureVesselPhase.RECOVERY,
-    "SmallShot Antic": PureVesselPhase.WINDUP,
-    "SmallShot LowHigh": PureVesselPhase.ACTIVE,
-    "SmallShot Recover": PureVesselPhase.RECOVERY,
-    "Plume Up": PureVesselPhase.ACTIVE,
-    "Plume Pause": PureVesselPhase.ACTIVE,
-    "Burst Pause": PureVesselPhase.ACTIVE,
-    "Dstab Antic": PureVesselPhase.WINDUP,
-    "Dstab Jump": PureVesselPhase.ACTIVE,
-    "Dstab Air": PureVesselPhase.ACTIVE,
-    "Stomp Antic": PureVesselPhase.WINDUP,
-    "Stomp Down": PureVesselPhase.ACTIVE,
-    "Stomp Recover": PureVesselPhase.RECOVERY,
-    "Counter Stance": PureVesselPhase.WINDUP,
-    "Counter Antic": PureVesselPhase.WINDUP,
-    "Counter End": PureVesselPhase.ACTIVE,
-    "CS Antic": PureVesselPhase.WINDUP,
-    "CSlash": PureVesselPhase.ACTIVE,
-    "CSlash Recover": PureVesselPhase.RECOVERY,
-    "Ball Up": PureVesselPhase.WINDUP,
-    "Focus Charge": PureVesselPhase.WINDUP,
-    "Focus Wait": PureVesselPhase.WINDUP,
-    "Focus Burst": PureVesselPhase.ACTIVE,
-    "Hit End": PureVesselPhase.RECOVERY,
-    "Focus Recover": PureVesselPhase.RECOVERY,
-    "Tendril Antic": PureVesselPhase.UNKNOWN,
-    "Tendril Burst": PureVesselPhase.UNKNOWN,
-    "Tendril Start": PureVesselPhase.UNKNOWN,
-    "Tendril Hit": PureVesselPhase.UNKNOWN,
-    "T2": PureVesselPhase.UNKNOWN,
-    "T3": PureVesselPhase.UNKNOWN,
-    "Tendril Hit End": PureVesselPhase.UNKNOWN,
-    "Tendril Recover": PureVesselPhase.UNKNOWN,
-    "Tele Out": PureVesselPhase.NEUTRAL,
-    "Tele In": PureVesselPhase.NEUTRAL,
-    "Tele Cancel": PureVesselPhase.NEUTRAL,
-    "Stun": PureVesselPhase.STUN,
-    "Stun Fall": PureVesselPhase.STUN,
-    "Stun Air": PureVesselPhase.STUN,
-    "StunHitUp": PureVesselPhase.STUN,
-    "StunToIdle": PureVesselPhase.RECOVERY,
-    "Evade Antic": PureVesselPhase.WINDUP,
-    "Evade": PureVesselPhase.ACTIVE,
-    "EvadeRecover": PureVesselPhase.RECOVERY,
-    "Idle": PureVesselPhase.NEUTRAL,
-    "Turn Anim": PureVesselPhase.NEUTRAL,
-    "Recover": PureVesselPhase.RECOVERY,
-    "Pause": PureVesselPhase.NEUTRAL,
-    "Intro 1": PureVesselPhase.NEUTRAL,
-    "Intro 2": PureVesselPhase.NEUTRAL,
-    "Intro 3": PureVesselPhase.NEUTRAL,
-    "Intro 4": PureVesselPhase.NEUTRAL,
-    "Intro 5": PureVesselPhase.NEUTRAL,
-    "Intro 6": PureVesselPhase.NEUTRAL,
-    "Intro Roar": PureVesselPhase.NEUTRAL,
-    "Intro Roar End": PureVesselPhase.NEUTRAL,
-    "Intro Idle": PureVesselPhase.NEUTRAL,
+    # 前摇（Antic 状态）
+    "Attack Antic": BossPhase.WINDUP,
+    "Jump Antic": BossPhase.WINDUP,
+    "DSlash Antic": BossPhase.WINDUP,
+    "Slam Antic": BossPhase.WINDUP,
+    "Sickle Antic": BossPhase.WINDUP,
+    # 危险/进行中
+    "Attack 1": BossPhase.ACTIVE,
+    "Attack Swipe": BossPhase.ACTIVE,
+    "Jump": BossPhase.ACTIVE,
+    "DSlash": BossPhase.ACTIVE,
+    "Slamming": BossPhase.ACTIVE,
+    "Waves": BossPhase.ACTIVE,
+    "Sickle Throw": BossPhase.ACTIVE,
+    "Throw?": BossPhase.ACTIVE,
+    # 收招
+    "Attack Recover": BossPhase.RECOVERY,
+    "Land": BossPhase.RECOVERY,
+    "Slam End": BossPhase.RECOVERY,
+    "Sickle Throw Recover": BossPhase.RECOVERY,
+    "Sick Throw CD": BossPhase.RECOVERY,
+    "Cooldown": BossPhase.RECOVERY,
+    # 开场（Intro：出场 + 吼叫）
+    "Init": BossPhase.NEUTRAL,
+    "Emerge Dust": BossPhase.NEUTRAL,
+    "Fall": BossPhase.NEUTRAL,
+    "Intro Land": BossPhase.NEUTRAL,
+    "Roar": BossPhase.NEUTRAL,
+    "Roar End": BossPhase.NEUTRAL,
+    "Roar Recover": BossPhase.NEUTRAL,
+    # 中性（走位/选择/转身/假动作）
+    "Idle": BossPhase.NEUTRAL,
+    "Walk": BossPhase.NEUTRAL,
+    "Turn": BossPhase.NEUTRAL,
+    "Set Speed": BossPhase.NEUTRAL,
+    "Speed Check": BossPhase.NEUTRAL,
+    "Active": BossPhase.NEUTRAL,
+    "Attack Choice": BossPhase.NEUTRAL,
+    "Stop At Edge": BossPhase.NEUTRAL,
+    "Feint": BossPhase.NEUTRAL,
+    "Feint?": BossPhase.NEUTRAL,
+    "Feint 2": BossPhase.NEUTRAL,
+    "Repeat": BossPhase.NEUTRAL,
+    "Repeat?": BossPhase.NEUTRAL,
+    "Repeat Pos Check": BossPhase.NEUTRAL,
+    "Check L": BossPhase.NEUTRAL,
+    "Check R": BossPhase.NEUTRAL,
+    "Shift L": BossPhase.NEUTRAL,
+    "Shift R": BossPhase.NEUTRAL,
+    "Ready": BossPhase.NEUTRAL,
 }
 
 
 def boss_phase(state):
-    """Return the attack phase from the Control FSM state.
+    """Return the attack phase from the Mantis FSM state.
 
     Unknown/missing states map to UNKNOWN, never to a guessed attack phase.
     """
     fsm_state = state.get("boss_control_state", "")
     if not fsm_state:
-        return PureVesselPhase.UNKNOWN
-    return _FSM_TO_PHASE.get(fsm_state, PureVesselPhase.UNKNOWN)
+        return BossPhase.UNKNOWN
+    return _FSM_TO_PHASE.get(fsm_state, BossPhase.UNKNOWN)
 
 
 def boss_attack(state):
     """Binary hazard-active signal, kept for the dodge reward.
 
-    Pure Vessel normally contributes one persistent contact collider. An
-    additional collider, or any detached DamageHero object, means an attack
-    hazard is live.
+    Traitor Lord's body contributes one persistent contact collider (an
+    attached hazard). An additional collider, or any detached DamageHero object
+    (sickle, shockwave), means an attack hazard is live.
     """
     hazards = state.get("hazards", [])
     if len(hazards) > 1 or any(not hazard.boss_attached for hazard in hazards):
         return BossAttack.ACTIVE
     return BossAttack.NONE
+
+
+# Traitor Lord's intro states: the boss has spawned and is doing its entrance
+# (dust + roar) but combat has not actually begun.
+INTRO_STATES = frozenset({
+    "Init", "Emerge Dust", "Fall", "Intro Land",
+    "Roar", "Roar End", "Roar Recover",
+})
+
+
+def is_intro_state(fsm_state):
+    return fsm_state in INTRO_STATES
 
 
 # ======================================================================
@@ -422,3 +379,50 @@ def is_attack_action(action):
         return MacroAction(int(action)) in ATTACK_MACRO_ACTIONS
     except (TypeError, ValueError):
         return False
+
+
+# ======================================================================
+# MULTI-BINARY BUTTON ACTIONS
+#
+# One independent Bernoulli head per button. This is what lets the agent
+# press "left + attack" at the same time, which the single 12-way macro head
+# could not express. Movement and jump stay held while selected. Attack is a
+# repeated tap request while selected, matching human held-attack labels;
+# dash remains edge-triggered so one decision cannot spend multiple dashes.
+# ======================================================================
+
+BUTTON_ORDER = ("left", "right", "up", "down", "attack", "jump", "dash")
+NUM_BUTTONS = len(BUTTON_ORDER)
+
+HELD_BUTTONS = frozenset({"left", "right", "up", "down", "jump"})
+TAP_BUTTONS = frozenset({"attack", "dash"})
+
+
+def execute_buttons(buttons, prev_buttons=None):
+    """Apply a multi-binary button vector and return the new previous state.
+
+    ``buttons`` is a length-``NUM_BUTTONS`` sequence of 0/1 aligned with
+    ``BUTTON_ORDER``. ``prev_buttons`` is the vector from the previous step
+    (or None on the first step) and is used only to detect press/release edges.
+    """
+    if len(buttons) != NUM_BUTTONS:
+        raise ValueError(f"expected {NUM_BUTTONS} buttons, got {len(buttons)}")
+    if (buttons[0] and buttons[1]) or (buttons[2] and buttons[3]):
+        raise ValueError("opposing directions cannot be pressed together")
+    if prev_buttons is None:
+        prev_buttons = [0] * NUM_BUTTONS
+    for index, name in enumerate(BUTTON_ORDER):
+        on = bool(buttons[index])
+        was_on = bool(prev_buttons[index])
+        if name == "attack":
+            if on:
+                controls.tap(name)
+        elif name == "dash":
+            if on and not was_on:
+                controls.tap(name)
+        else:
+            if on and not was_on:
+                controls.key_down(name)
+            elif not on and was_on:
+                controls.key_up(name)
+    return list(buttons)

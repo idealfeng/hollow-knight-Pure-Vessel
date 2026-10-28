@@ -2,6 +2,7 @@
 
 import math
 
+from agent.action import is_intro_state
 from game_state import _parse_frame
 
 BUTTON_NAMES = (
@@ -50,13 +51,13 @@ class EpisodeTracker:
             # On death, PlayerData can restore hero HP before the dying arena
             # unloads. Its old, wounded boss is not the next demonstration.
             # Re-arm only after the old boss is absent or a new intro appears.
-            if state.boss_health <= 0 or state.boss_control_state.startswith("Intro"):
+            if state.boss_health <= 0 or is_intro_state(state.boss_control_state):
                 self.waiting_for_new_fight = False
         if (self.current is None and not self.waiting_for_new_fight
                 and state.knight_box is not None
                 and state.knight_health > 0 and state.boss_health > 0
                 and state.boss_box is not None and state.boss_control_state
-                and not state.boss_control_state.startswith("Intro")):
+                and not is_intro_state(state.boss_control_state)):
             self.current = {
                 "episode": self.completed + 1,
                 "start_frame": record["frame"],

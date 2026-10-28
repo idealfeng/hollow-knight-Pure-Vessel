@@ -68,6 +68,20 @@ public partial class HollowRL : BaseUnityPlugin
     private volatile float requestedGameSpeed = -1f;
     private volatile bool serverRunning = true;
     private bool inputReady;
+    // Boss Control FSM name. Pure Vessel uses "Control"; Traitor Lord uses
+    // "Mantis". Overridable via --hollowrl-boss-fsm= without a recompile.
+    private readonly string bossFsmName = ResolveBossFsmName();
+
+    private static string ResolveBossFsmName()
+    {
+        foreach (string arg in Environment.GetCommandLineArgs())
+        {
+            const string prefix = "--hollowrl-boss-fsm=";
+            if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return arg.Substring(prefix.Length);
+        }
+        return "Control";
+    }
 
     // A short-lived, automatic diagnostic recording is opened only while the
     // exact Pure Vessel object is present. It captures the information needed
@@ -192,9 +206,13 @@ public partial class HollowRL : BaseUnityPlugin
 
         bool speedToggle = Input.GetKeyDown(KeyCode.O);
         bool pauseToggle = Input.GetKeyDown(KeyCode.P);
+        bool discoveryDump = Input.GetKeyDown(KeyCode.F10);
 
         if (speedToggle)
             Time.timeScale = Mathf.Approximately(Time.timeScale, 1f) ? 2f : 1f;
+
+        if (discoveryDump)
+            DumpBossDiscovery();
 
         lock (posLock)
         {
@@ -538,7 +556,7 @@ public partial class HollowRL : BaseUnityPlugin
                 continue;
 
             object fsmName = GetMemberValue(component, "FsmName");
-            if ((fsmName as string) != "Control")
+            if ((fsmName as string) != bossFsmName)
                 continue;
 
             object activeState = GetMemberValue(component, "ActiveStateName");
@@ -606,6 +624,64 @@ public partial class HollowRL : BaseUnityPlugin
 
         System.Reflection.FieldInfo field = type.GetField(name, flags);
         return field != null ? field.GetValue(target) : null;
+    }
+
+
+    /// <summary>
+    /// F10: dump every HealthManager (plus its PlayMaker FSMs) in the current
+    /// scene to the BepInEx log. Used once per new boss to discover its object
+    /// name, scene name and Control-FSM state vocabulary - the values that
+    /// KnightPos.cs and agent/action.py hardcode for the target boss.
+    /// </summary>
+    private void DumpBossDiscovery()
+    {
+        Logger.LogWarning("HollowRL: === boss discovery dump ===");
+        try
+        {
+            if (HeroController.instance != null)
+            {
+                Vector3 kpos = HeroController.instance.transform.position;
+                Logger.LogWarning("HollowRL: [knight] pos=("
+                    + FormatFloat(kpos.x) + "," + FormatFloat(kpos.y) + ")");
+            }
+
+            foreach (HealthManager candidate in FindObjectsOfType<HealthManager>())
+            {
+                if (candidate == null)
+                    continue;
+                GameObject go = candidate.gameObject;
+                if (go == null)
+                    continue;
+
+                var fsmDetails = new List<string>();
+                foreach (Component component in candidate.GetComponentsInChildren<Component>(true))
+                {
+                    if (component == null || component.GetType().Name != "PlayMakerFSM")
+                        continue;
+                    object fsmName = GetMemberValue(component, "FsmName");
+                    object fsm = GetMemberValue(component, "Fsm");
+                    object states = GetMemberValue(fsm, "States");
+                    var stateNames = new List<string>();
+                    if (states is System.Collections.IEnumerable enumerable)
+                        foreach (object state in enumerable)
+                            stateNames.Add(Sanitize(GetMemberValue(state, "Name")));
+                    fsmDetails.Add(Sanitize(fsmName) + "={" + string.Join(",", stateNames) + "}");
+                }
+
+                Logger.LogWarning("HollowRL: [boss] name='" + go.name
+                    + "' scene='" + go.scene.name
+                    + "' hp=" + candidate.hp
+                    + " active=" + go.activeInHierarchy
+                    + " root='" + go.transform.root.name + "'");
+                if (fsmDetails.Count > 0)
+                    Logger.LogWarning("HollowRL: [fsm] " + string.Join(" | ", fsmDetails.ToArray()));
+            }
+        }
+        catch (Exception exc)
+        {
+            Logger.LogWarning("HollowRL: discovery dump failed - " + exc.Message);
+        }
+        Logger.LogWarning("HollowRL: === end boss discovery dump ===");
     }
 
 

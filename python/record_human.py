@@ -38,7 +38,7 @@ def main():
         "port": args.port, "requested_episodes": args.episodes,
         "created_at": datetime.now().astimezone().isoformat(),
         "timing": "state from Unity Update, hardware input from LateUpdate of the same frame",
-        "labels": "raw held/pressed/released bitmasks; not 12 macro-action labels",
+        "labels": "raw held/pressed/released bitmasks; seven combat buttons used for BC",
         "status": "starting", "frames": 0, "completed_episodes": 0, "dropped_frames": 0,
     }
     with socket.create_connection(("127.0.0.1", args.port), timeout=5.0) as sock:
@@ -79,7 +79,7 @@ def main():
             save_metadata()
             print(f"Recording to: {output}\n"
                   f"Play normally in the {args.port} window (keyboard or controller).\n"
-                  "Load the training save and enter Pure Vessel manually.\n"
+                  "Load the training save and enter Traitor Lord manually.\n"
                   f"Menus/intro are excluded from combat; stops after {args.episodes} fights.\n"
                   "Ctrl+C, or creating a STOP file in the output folder, saves and stops.", flush=True)
             started = time.monotonic()
