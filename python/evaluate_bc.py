@@ -76,6 +76,7 @@ def main():
                 if terminated or truncated:
                     result = {
                         "episode": episode + 1, "port": args.port,
+                        "checkpoint_update": int(checkpoint.get("update", -1)),
                         "reward": total_reward, "elapsed_seconds": time.perf_counter() - started,
                         "choices": dict(choices), "presses": dict(presses), **info,
                     }

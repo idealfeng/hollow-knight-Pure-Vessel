@@ -13,11 +13,20 @@ param(
     [int]$TotalUpdates = 10000,
     [ValidateRange(0, 10000)]
     [double]$StopBelowHits = 0,
+    [ValidateRange(1e-7, 1.0)]
+    [double]$Lr = 3e-4,
+    [ValidateRange(0.0, 1.0)]
+    [double]$EntCoef = 0.01,
+    [ValidateRange(0, 100000)]
+    [int]$EvalEvery = 0,
+    [ValidateRange(1, 1000)]
+    [int]$EvalEpisodes = 1,
     [switch]$NoMonitor,
     [ValidateRange(3.0, 15.0)]
     [double]$DeathSettleWait = 7.0,
     [ValidateRange(0.5, 5.0)]
     [double]$PostLeftWait = 2.0,
+    [string]$InitCheckpoint = "",
     [string]$RunDir = ""
 )
 
@@ -39,7 +48,11 @@ $arguments += @(
     "--frame-stack", "$FrameStack",
     "--control-hz", "$ControlHz",
     "--game-speed", "$GameSpeed",
-    "--total-updates", "$TotalUpdates"
+    "--total-updates", "$TotalUpdates",
+    "--lr", "$Lr",
+    "--ent-coef", "$EntCoef",
+    "--eval-every", "$EvalEvery",
+    "--eval-episodes", "$EvalEpisodes"
 )
 if ($StopBelowHits -gt 0) {
     $arguments += @("--stop-below-hits", "$StopBelowHits")
@@ -49,6 +62,15 @@ if ($NoMonitor) {
 }
 if ($StepsPerEnv -gt 0) {
     $arguments += @("--steps-per-env", "$StepsPerEnv")
+}
+if ($InitCheckpoint) {
+    if ([IO.Path]::IsPathRooted($InitCheckpoint)) {
+        $resolvedInit = $InitCheckpoint
+    }
+    else {
+        $resolvedInit = Join-Path $projectRoot $InitCheckpoint
+    }
+    $arguments += @("--init-checkpoint", $resolvedInit)
 }
 if ($RunDir) {
     if ([IO.Path]::IsPathRooted($RunDir)) {

@@ -1,4 +1,4 @@
-"""Train a PPO policy against the Gymnasium-wrapped Pure Vessel fight."""
+"""Train a PPO policy against the Gymnasium-wrapped Traitor Lord fight."""
 
 import faulthandler
 import os
@@ -106,7 +106,7 @@ if resumed:
 monitor = TrainingMonitor(
     target_kl=TARGET_KL,
     action_sizes=[3, 1, 3, 1, 2, 2, 2],
-    action_labels=["horizontal", "paired", "vertical", "paired",
+    action_labels=["left", "right", "up", "down",
                    "attack", "jump", "dash"],
 )
 monitor.set_run_info(resumed, start_update=start_update, start_episode=episode)

@@ -1,4 +1,4 @@
-"""Small deterministic reachability baseline for Pure Vessel diagnostics.
+"""Small deterministic reachability baseline for Traitor Lord diagnostics.
 
 This is deliberately simple: it tests whether the current observations and
 macro actions can approach and hit the boss at all. It is not an expert policy

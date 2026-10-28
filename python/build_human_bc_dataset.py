@@ -43,8 +43,8 @@ def held_to_buttons(held):
     """Extract the multi-binary button vector from a recorded held-bitmask.
 
     The recorder stores the full 11-button mask; the policy only needs the
-    seven combat buttons in ``BUTTON_ORDER``. This mapping is lossless for
-    those buttons - no chord is collapsed into a single macro label.
+    seven combat buttons in ``BUTTON_ORDER``. Compatible chords remain intact;
+    opposing directions are mapped to neutral because the policy excludes them.
     """
     buttons = [int(bool(held & (1 << BUTTON_NAMES.index(name))))
                for name in BUTTON_ORDER]
@@ -159,7 +159,7 @@ def load_frames(session_dir):
     return frames
 
 
-def build_session(session_dir):
+def build_session(session_dir, frame_stack=FRAME_STACK):
     """Build observation/action/reward arrays for one recording session."""
     episodes = load_episodes(session_dir)
     frames = load_frames(session_dir)
@@ -210,7 +210,7 @@ def build_session(session_dir):
 
         if any(obs is None for obs in step_observations[:-1]):
             raise ValueError(f"{session_dir}: missing knight geometry during combat")
-        stacked = stack_observations(step_observations[:-1])
+        stacked = stack_observations(step_observations[:-1], count=frame_stack)
         for index in range(len(step_states) - 1):
             done = index == len(step_states) - 2
             reward = calculate_reward(
@@ -234,7 +234,7 @@ def build_session(session_dir):
     }
 
 
-def merge_sessions(sessions):
+def merge_sessions(sessions, frame_stack=FRAME_STACK):
     """Concatenate several sessions, remapping episode ids to stay unique."""
     merged = {
         "observations": [], "actions": [], "episode_ids": [],
@@ -242,7 +242,7 @@ def merge_sessions(sessions):
     }
     episode_offset = 0
     for session in sessions:
-        data = build_session(session)
+        data = build_session(session, frame_stack=frame_stack)
         merged["observations"].append(data["observations"])
         merged["actions"].append(data["actions"])
         merged["episode_ids"].append(data["episode_ids"] + episode_offset)
@@ -264,13 +264,18 @@ def parse_args():
                         help="one or more human recording directories")
     parser.add_argument("--output", required=True,
                         help="output .npz path for train_bc.py")
-    return parser.parse_args()
+    parser.add_argument("--frame-stack", type=int, default=FRAME_STACK,
+                        help="number of 10 Hz observations to stack")
+    args = parser.parse_args()
+    if args.frame_stack < 1:
+        parser.error("--frame-stack must be positive")
+    return args
 
 
 def main():
     args = parse_args()
     sessions = [Path(s).resolve() for s in args.sessions]
-    data = merge_sessions(sessions)
+    data = merge_sessions(sessions, frame_stack=args.frame_stack)
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

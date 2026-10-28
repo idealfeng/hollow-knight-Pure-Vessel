@@ -46,15 +46,34 @@
 ```powershell
 .\python\.venv\Scripts\python.exe python\build_human_bc_dataset.py `
   --sessions python\runs\human_demos\<会话目录> `
-  --output python\runs\traitor_human_demos.npz
+  --output python\runs\traitor_human_demos_v2.npz
 .\python\.venv\Scripts\python.exe python\train_bc.py `
-  --demos python\runs\traitor_human_demos.npz `
-  --run-dir python\runs\traitor_bc_v1_9001_9002 --ports 9001 9002
+  --demos python\runs\traitor_human_demos_v2.npz `
+  --run-dir python\runs\traitor_bc_v2_9001_9002 --ports 9001 9002
 ```
 
 行为克隆只使用已录下的完整战斗，并按整局划分训练与验证。预训练结束后，两个游戏实例
 均准备好叛徒领主战斗，再运行：
 
 ```powershell
-.\run_multi_windows.ps1 -Ports 9001,9002 -RunDir python\runs\traitor_bc_v1_9001_9002
+.\run_multi_windows.ps1 -Ports 9001,9002 -RunDir python\runs\traitor_bc_v2_9001_9002
 ```
+
+上述 `traitor_bc_v2_9001_9002` 已由 2026-10-28 的五局示范生成并进行过两次 PPO 更新。
+纯 BC 初始权重保存在同目录的 `bc_initial_checkpoint.pth`。重做实验请换新的 `--run-dir`，
+避免覆盖现有结果。当前训练状态可用 `python\summarize_run.py` 查看。
+要从纯 BC 起点开独立实验（降低学习率与熵奖励，并定期用固定贪心评估判断进步），
+换一个新的 `--run-dir`，并用 `-InitCheckpoint` 指向 `bc_initial_checkpoint.pth`：
+
+```powershell
+.\run_multi_windows.ps1 -Ports 9001,9002 `
+  -RunDir python\runs\traitor_bc_v3_9001_9002 `
+  -InitCheckpoint python\runs\traitor_bc_v2_9001_9002\bc_initial_checkpoint.pth `
+  -Lr 1e-4 -EntCoef 0.005 -EvalEvery 10 -EvalEpisodes 1
+```
+
+`-Lr` 与 `-EntCoef` 覆盖默认的 `3e-4` / `0.01`；`-EvalEvery 10` 表示每 10 次 PPO 更新后，
+对每个环境用 `greedy_act` 各打 1 局（`-EvalEpisodes 1`），结果写入新目录的
+`eval_metrics.jsonl`，训练指标仍在 `training_metrics.jsonl`。贪心评估不写回训练缓冲区、
+不更新观测归一化、也不反传，只用于衡量确定性策略的进步。
+

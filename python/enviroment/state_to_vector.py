@@ -185,7 +185,7 @@ def state_to_vector(state, time_frac=0.0):
     if boss_present:
         boss_hp_obs = state["boss_health"] if state["boss_health"] >= 0 else 0
         # HealthManager's root transform is not always the body centre:
-        # Pure Vessel's pose colliders can be offset by a few game units.
+        # Traitor Lord's pose colliders can be offset by a few game units.
         # Use the live body box for aiming, with the root as the fallback
         # during teleport frames when no body collider is enabled.
         boss_box = state["boss_box"]

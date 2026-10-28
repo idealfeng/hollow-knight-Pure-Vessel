@@ -1,4 +1,4 @@
-"""Reward shaping for the Pure Vessel environment.
+"""Reward shaping for the Traitor Lord environment.
 
 ``calculate_reward`` scores one state transition. ``RewardTracker`` adds the
 small amount of history required to decide whether a nail swing really missed

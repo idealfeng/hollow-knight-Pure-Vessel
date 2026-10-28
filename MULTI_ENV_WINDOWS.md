@@ -79,16 +79,16 @@ unity_mod\HollowRL\bin\Release\HollowRL.dll
 - 独立 TCP 端口；
 - 640x360 窗口；
 - 30 FPS 上限；
-- 2 倍游戏速度；
+- 1 倍游戏速度；
 - 后台继续运行（由 Mod 设置 `Application.runInBackground`）。
 
 新启动的游戏窗口会正常显示，方便分别加载训练存档；重复运行脚本会识别已
 监听对应端口的实例，不会再额外启动同一路径的游戏。
 
-两个窗口都需要加载训练存档并站到 Pure Vessel 雕像前。训练器启动时会对两边
+两个窗口都需要加载训练存档并站到 叛徒领主雕像前。训练器启动时会对两边
 同时执行 `up`、`submit`，检查 Boss 确实出现，再暂时冻结游戏时间以完成
 模型初始化；开始采样时恢复指定的训练速度。此自动进入仅适用于随仓库提供的
-Pure Vessel 训练存档和已知雕像坐标。若位置不符，训练器会明确报出端口和坐标。
+叛徒领主训练存档和已知雕像坐标。若位置不符，训练器会明确报出端口和坐标。
 
 ## 3. 启动中央训练器
 
@@ -112,7 +112,7 @@ python\runs\body_center_v3_9001_9002\
 ```
 
 旧实验 `python\runs\multi_9001_9002\` 保留，仅供对照：当时每局约 13 游戏秒的 Boss
-开场动画被算作训练步数，而且碰撞盒常缺失。新实验会等到 Boss 的 Control FSM 离开
+开场动画被算作训练步数，而且碰撞盒常缺失。新实验会等到 Boss 的 Mantis FSM 离开
 `Intro` 且真实身体碰撞盒出现后才开始采样；Mod 不再把技能探测范围的 trigger 当作身体框。
 传送期间身体框可能暂时缺失，此时距离奖励跳过该帧。新目录也不会覆盖单环境的
 `python\ppo_checkpoint.pth`。
@@ -163,9 +163,9 @@ step/s | reset 31.2s/2 retries
 
 ## 实现约束
 
-当前 checkpoint 格式为 5：在身体框中心坐标修复的基础上，修正了“Boss 是否朝向小骑士”
+当前 checkpoint 格式为 8：在身体框中心坐标修复的基础上，修正了“Boss 是否朝向小骑士”
 的左右判断。格式 4 的示范可由 `python/train_bc.py` 按原始位置和朝向迁移；旧网络不能直接续接。
-模仿学习与本机对照实验的结果、路径和续训命令见 [TRAINING_DIAGNOSIS.md](TRAINING_DIAGNOSIS.md)。
+离线分析训练日志可用 `python/summarize_run.py`。
 
 - 每个 worker 在导入 `game_state` 前设置自己的 `HOLLOWRL_PORT`。
 - rollout 期间模型参数固定，收集结束后中央进程才更新。

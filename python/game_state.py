@@ -126,7 +126,7 @@ class Frame:
     boss_velocity: tuple
     boss_position: tuple
     boss_box: tuple              # None when no target boss is present
-    boss_control_state: str      # Control FSM ActiveStateName, "" when absent
+    boss_control_state: str      # Mantis FSM ActiveStateName, "" when absent
     wall_distance_left: float
     wall_distance_right: float
     knight_health: int

@@ -11,8 +11,10 @@ from matplotlib.figure import Figure
 AVG_WINDOW = 20
 MIN_SAVE_INTERVAL = 5.0  # seconds between history writes to disk
 
-# The current policy is one 12-way macro-action head.
-DEFAULT_ACTION_SIZES = [12]
+# Current policy: seven button heads. left/right and up/down are each one
+# exclusive three-way choice (log 3); the other three buttons are Bernoulli
+# (log 2 each), and the second head of each direction pair contributes 0.
+DEFAULT_ACTION_SIZES = [3, 1, 3, 1, 2, 2, 2]
 
 
 def max_entropy(action_sizes):

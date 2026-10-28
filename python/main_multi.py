@@ -296,6 +296,16 @@ def parse_args():
                         help="0 chooses about 2048 total transitions/update")
     parser.add_argument("--total-updates", type=int, default=10000)
     parser.add_argument("--run-dir", default="")
+    parser.add_argument("--init-checkpoint", default="",
+                        help="start from this checkpoint when the run dir has no ppo_checkpoint.pth yet (e.g. a BC bc_initial_checkpoint.pth)")
+    parser.add_argument("--lr", type=float, default=LR,
+                        help=f"Adam learning rate (default {LR:g})")
+    parser.add_argument("--ent-coef", type=float, default=ENT_COEF,
+                        help=f"entropy bonus coefficient (default {ENT_COEF:g})")
+    parser.add_argument("--eval-every", type=int, default=0,
+                        help="run fixed greedy evaluation every N updates; 0 disables")
+    parser.add_argument("--eval-episodes", type=int, default=1,
+                        help="greedy episodes per environment during each evaluation")
     parser.add_argument("--freeze-obs-norm", action="store_true",
                         help="keep the loaded observation normalizer fixed during this run")
     parser.add_argument("--stop-below-hits", type=float, default=0.0,
@@ -318,6 +328,14 @@ def parse_args():
         parser.error("torch-threads must be positive")
     if not math.isfinite(args.stop_below_hits) or args.stop_below_hits < 0:
         parser.error("stop-below-hits must be finite and nonnegative")
+    if not math.isfinite(args.lr) or args.lr <= 0:
+        parser.error("lr must be finite and positive")
+    if not math.isfinite(args.ent_coef) or args.ent_coef < 0:
+        parser.error("ent-coef must be finite and nonnegative")
+    if args.eval_every < 0:
+        parser.error("eval-every must be 0 or positive")
+    if args.eval_episodes < 1:
+        parser.error("eval-episodes must be positive")
     return args
 
 
@@ -336,6 +354,7 @@ def main():
     checkpoint_path = os.path.join(run_dir, "ppo_checkpoint.pth")
     history_path = os.path.join(run_dir, "monitor_history.npz")
     metrics_path = os.path.join(run_dir, "training_metrics.jsonl")
+    eval_metrics_path = os.path.join(run_dir, "eval_metrics.jsonl")
 
     print(
         f"starting {num_envs} environments on ports {args.ports}; "
@@ -371,7 +390,7 @@ def main():
 
     model = ActorCritic(state_size, ACTION_SIZES, hidden=MODEL_HIDDEN,
                         bernoulli=True, exclusive_directions=True)
-    optimizer = optim.Adam(model.parameters(), lr=LR, eps=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     obs_norm = RunningNorm(state_size)
     buffer = VectorRolloutBuffer(
         steps_per_env, num_envs, state_size, num_action_heads=NUM_BUTTONS
@@ -384,8 +403,18 @@ def main():
     freeze_obs_norm = args.freeze_obs_norm
     pretraining = None
 
+    init_source = None
     if resumed:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        init_source = checkpoint_path
+    elif args.init_checkpoint:
+        init_source = os.path.abspath(args.init_checkpoint)
+        if not os.path.isfile(init_source):
+            pool.close()
+            raise SystemExit(f"--init-checkpoint not found: {init_source}")
+        print(f"starting from initial checkpoint: {init_source}", flush=True)
+
+    if init_source is not None:
+        checkpoint = torch.load(init_source, map_location="cpu", weights_only=False)
         expected = {
             "format_version": CHECKPOINT_FORMAT,
             "observation_size": state_size,
@@ -415,7 +444,12 @@ def main():
         episode = int(checkpoint["episode"])
         print(f"resumed at update {start_update}, step {global_step}")
 
-    if freeze_obs_norm and not resumed:
+    # The saved optimizer may hold a different learning rate (the BC checkpoint
+    # stores the module default). Honour --lr explicitly for this run.
+    for group in optimizer.param_groups:
+        group["lr"] = args.lr
+
+    if freeze_obs_norm and init_source is None:
         pool.close()
         raise SystemExit("--freeze-obs-norm requires a checkpoint with fitted statistics")
     if freeze_obs_norm:
@@ -427,7 +461,7 @@ def main():
             monitor = TrainingMonitor(
                 target_kl=TARGET_KL,
                 action_sizes=[3, 1, 3, 1, 2, 2, 2],
-                action_labels=["horizontal", "paired", "vertical", "paired",
+                action_labels=["left", "right", "up", "down",
                                "attack", "jump", "dash"],
                 history_path=history_path,
             )
@@ -456,6 +490,62 @@ def main():
         if update and not freeze_obs_norm:
             obs_norm.update(raw)
         return obs_norm.normalize(raw)
+
+    def run_greedy_eval(update):
+        """Deterministic progress check: play each env with greedy_act, no
+        buffer writes, no obs_norm updates and no gradient step. Results are
+        appended to eval_metrics.jsonl so progress can be judged on a fixed
+        policy rather than exploratory training rollouts."""
+        model.eval()
+        try:
+            for env_index in range(num_envs):
+                for ep_index in range(args.eval_episodes):
+                    pool.send(env_index, "reset")
+                    obs, _ = pool.recv(env_index)
+                    pool.send(env_index, "start")
+                    pool.recv(env_index)
+                    episode_reward = 0.0
+                    episode_steps = 0
+                    done = False
+                    info = {}
+                    while not done:
+                        action = model.greedy_act(observe(obs, update=False))
+                        pool.send(env_index, "step", action)
+                        obs, reward, terminated, truncated, info = pool.recv(env_index)
+                        episode_reward += reward
+                        episode_steps += 1
+                        done = bool(terminated or truncated)
+                    record = {
+                        "event": "greedy_eval",
+                        "update": update,
+                        "global_step": global_step,
+                        "env": env_index,
+                        "port": args.ports[env_index],
+                        "episode_in_eval": ep_index + 1,
+                        "reward": episode_reward,
+                        "steps": episode_steps,
+                        "hits": info.get("hits"),
+                        "damage": info.get("damage"),
+                        "misses": info.get("misses"),
+                        "staggers": info.get("staggers"),
+                        "min_boss_health": info.get("min_boss_health"),
+                        "won": info.get("won"),
+                    }
+                    with open(eval_metrics_path, "a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(record, default=float) + "\n")
+                    print(
+                        f"greedy eval upd {update} | env {env_index} "
+                        f"port {args.ports[env_index]} | ep {ep_index + 1} | "
+                        f"reward {episode_reward:+.2f} | hits {info.get('hits')} | "
+                        f"damage {info.get('damage')} | "
+                        f"min_boss_hp {info.get('min_boss_health')} | "
+                        f"won {bool(info.get('won'))}",
+                        flush=True,
+                    )
+            for env_index in range(num_envs):
+                needs_reset[env_index] = True
+        finally:
+            model.train()
 
     def add_episode(info, env_index):
         nonlocal episode
@@ -634,7 +724,7 @@ def main():
                     clip_eps=CLIP_EPS,
                     epochs=EPOCHS,
                     minibatch_size=MINIBATCH_SIZE,
-                    ent_coef=ENT_COEF,
+                    ent_coef=args.ent_coef,
                     vf_coef=VF_COEF,
                     max_grad_norm=MAX_GRAD_NORM,
                     target_kl=TARGET_KL,
@@ -662,6 +752,8 @@ def main():
 
                 if update % SAVE_EVERY_UPDATES == 0:
                     save_checkpoint(update)
+                if args.eval_every > 0 and update % args.eval_every == 0:
+                    run_greedy_eval(update)
                 if (args.stop_below_hits > 0 and len(recent_hits) == recent_hits.maxlen
                         and np.mean(recent_hits) < args.stop_below_hits):
                     mean_hits = float(np.mean(recent_hits))

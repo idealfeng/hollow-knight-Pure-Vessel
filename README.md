@@ -1,12 +1,12 @@
 # HollowRL
 
-A reinforcement learning agent that fights a Hollow Knight boss — Pure Vessel —
+A reinforcement learning agent that fights a Hollow Knight boss — Traitor Lord —
 trained with PPO against the live game.
 
 There is no emulator, no screen scraping and no fake keystrokes. A BepInEx mod
 loaded inside the game exposes the fight as a structured state feed and accepts
 input commands over a loopback TCP socket; a Python trainer on the other end
-reads that state at 10 Hz, samples a macro action from a policy network, and sends the
+reads that state at 10 Hz, samples seven button actions from a policy network, and sends the
 resulting button presses back into the game process.
 
 ```
@@ -34,8 +34,8 @@ have open.
 **Contents:** [Repository layout](#repository-layout) ·
 [Setup](#setup) · [Running](#running) ·
 [How an episode runs](#how-an-episode-runs) ·
-[Observations](#observation-space--126-base-features-four-frame-stack) ·
-[Actions](#action-space--one-12-way-macro-head) ·
+[Observations](#observation-space--118-base-features-four-frame-stack) ·
+[Actions](#action-space--seven-button-policy) ·
 [Reward](#reward-function) · [PPO configuration](#ppo-configuration) ·
 [Wire protocol](#wire-protocol) · [Files a run produces](#files-a-run-produces) ·
 [Known rough edges](#known-rough-edges)
@@ -56,14 +56,14 @@ python/
   game_state.py        Background thread polling the mod, exposed as module globals
   controls.py          Input command client (KD / KU / TAP / CLEAR / KILL)
   hollow_knight_env.py Gymnasium Env, reset/step contract and four-frame stack
-  ppo_model.py         Shared-trunk actor-critic with one 12-way action head
+  ppo_model.py         Shared-trunk actor-critic with seven button heads
   ppo_training.py      GAE + clipped surrogate objective + diagnostics
   rollout_buffer.py    Fixed-size rollout storage and GAE computation
   obs_norm.py          Running mean/variance observation normaliser
   monitor.py           Live 3x3 training dashboard (Tk + matplotlib)
-  test_gui_client.py   Live game/reward/policy inspector, usable while you play
-  state_vector_viewer.py  Bare listing of the 126 base observation features
-  agent/               action.py (macro actions), reward.py, calc.py (box geometry)
+  evaluate_bc.py       Play a saved policy against a live fight without training
+  summarize_run.py     Offline summary of a run's training_metrics.jsonl
+  agent/               action.py (buttons + boss moves), reward.py, calc.py (box geometry)
   enviroment/          state_to_vector.py (observation + is_done), reset.py (episode reset)
 
 BepInEx/              Bundled BepInEx 5 (x64) — copy its contents into the game folder
@@ -220,8 +220,8 @@ Two read-only tools can run alongside it, or on their own while you play the
 fight yourself:
 
 ```sh
-.venv/bin/python test_gui_client.py       # game view, live reward breakdown, policy probabilities
-.venv/bin/python state_vector_viewer.py   # every observation feature and its current value
+.venv/bin/python evaluate_bc.py --checkpoint ppo_checkpoint.pth   # play a saved policy
+.venv/bin/python summarize_run.py runs/<run_dir>   # summarize a run's training_metrics.jsonl
 ```
 
 ### In-game hotkeys
@@ -256,7 +256,7 @@ on it.
    navigates the retry menu (`left`, `up`, `submit`) and waits for a live, stable
    fight state — retrying up to four times before giving up with a message.
 2. The control loop runs at **10 Hz**. Each step reads the current state, samples
-   one of 12 deliberate macro actions, dispatches it, sleeps `1/10 s`
+   the seven button actions, dispatches them, sleeps `1/10 s`
    scaled by game speed, then reads the next state and computes the reward.
 3. An episode ends when the boss's health reaches 0, when the knight dies, or at
    the **60 s cap** — at which point the trainer sends `KILL` rather than letting
@@ -270,7 +270,7 @@ advantage chain is cut cleanly instead of splicing two unrelated moments togethe
 
 ---
 
-## Observation space — 126 base features, four-frame stack
+## Observation space — 118 base features, four-frame stack
 
 Built by `enviroment.state_to_vector()`, normalised by a running mean/variance
 estimator (`obs_norm.py`) that clips to ±10 sigma. All boxes are
@@ -283,30 +283,30 @@ estimator (`obs_norm.py`) that clips to ±10 sigma. All boxes are
 | Boss | `boss_present`, `boss_health`, `boss_dx/dy`, `boss_rel_vel_x/y`, `boss_width/height`, `boss_facing_left`, `boss_faces_knight`, `knight_faces_boss` (11) |
 | Fight progress | `hit_count`, `damage_count`, `time_frac`, current FSM-state age (4) |
 | Hazard summary | `hazard_count`, `nearest_edge_distance`, 4 directional gaps, `attack_active` (7) |
-| Move one-hot | 12 Pure Vessel moves from the Control FSM state (12) |
-| Phase one-hot | neutral, windup, active, recovery, stun, unknown (6) |
+| Move one-hot | 5 Traitor Lord moves from the Mantis FSM state (5) |
+| Phase one-hot | neutral, windup, active, recovery, unknown (5) |
 | Hazards | 8 closest hazards, each `dx/dy/width/height/rel_vel_x/rel_vel_y/boss_attached/present` (64) |
 
 `time_frac` matters more than it looks: without it the critic cannot distinguish a
 state at t=5 s from an identical-looking one at t=59 s, even though their true
 returns differ enormously.
 
-`state_vector_viewer.py` lists one base frame. Training concatenates the latest
-four frames into a 504-value input, providing about 0.4 s of short-term history
+`enviroment/state_to_vector.py` builds one base frame. Training concatenates the latest
+four frames into a 472-value input, providing about 0.4 s of short-term history
 at 10 Hz without requiring a recurrent model.
 
 ---
 
-## Action space — one 12-way macro head
+## Action space — seven-button policy
 
-The policy selects exactly one deliberate option per 100 ms decision: idle,
-move left/right, dash left/right, neutral/left/right jump, or nail attack
-left/right/up/down. This replaces the old five-head space whose factorised
-outputs still produced 180 joint button combinations, including contradictory
-attack/dash/jump mixtures.
+The policy emits seven independent button values per 100 ms decision: left,
+right, up, down, attack, jump and dash. Left+right and up+down are mutually
+exclusive (one three-way choice each), so opposite directions can never be
+pressed together. The old 12-way macro head is gone: it could not express
+left+attack, a core movement-plus-attack combination.
 
-The single categorical head has a maximum entropy of `ln(12) = 2.48` and uses a
-conventional `TARGET_KL = 0.03`.
+The seven heads have a maximum joint entropy of `2·ln(3) + 3·ln(2) ≈ 4.28` and
+use a conventional `TARGET_KL = 0.03`.
 
 Held directions (`left`/`right`/`up`/`down`) stay down until released. Attacks,
 dashes and jumps are timed taps whose release is scheduled *by the mod*, not by a
@@ -324,12 +324,11 @@ it reaches the buffer.
 | Event | Reward |
 |-------|--------|
 | Boss HP removed | `delta_hp / 33`, so every real source of damage is proportional |
-| Boss Control FSM enters a real stun | +10 |
 | Boss defeated | +100 |
 | Clean exit from an ACTIVE boss phase | +0.05 |
 | Confirmed empty nail swing | −0.03 |
 | Time | −0.10 per second |
-| Too far during neutral/recovery/stun | up to −0.05 per second |
+| Too far during neutral/recovery | up to −0.05 per second |
 | Damage taken | −3 per mask |
 | Death | −20 |
 
@@ -338,9 +337,9 @@ button request rejected by cooldown is not labelled a whiff. Distance shaping is
 disabled while the boss is winding up or actively attacking, so evasive spacing
 is not punished.
 
-The stagger signal and move classifier are read directly from Pure Vessel's
-PlayMaker Control FSM. `agent/action.py:boss_move()` reads its
-`ActiveStateName` and maps it to a 12-class `PureVesselMove` one-hot, so a move is
+The move classifier is read directly from Traitor Lord's
+PlayMaker Mantis FSM. `agent/action.py:boss_move()` reads its
+`ActiveStateName` and maps it to a 5-class `BossMove` one-hot, so a move is
 recognised during its windup ("* Antic") rather than only once its hazard collider
 appears.
 
@@ -353,7 +352,7 @@ All in `main.py`.
 | Parameter | Value | Note |
 |-----------|-------|------|
 | `CONTROL_HZ` | 10 | 600 decisions per capped episode |
-| `FRAME_STACK` | 4 | 504-value flattened network input |
+| `FRAME_STACK` | 4 | 472-value flattened network input |
 | `ROLLOUT_STEPS` | 2048 | ~205 s of game time per update |
 | `GAMMA` | 0.9955 | approximately the same per-second discount as 0.997 at 15 Hz |
 | `GAE_LAMBDA` | 0.95 | |
@@ -363,11 +362,11 @@ All in `main.py`.
 | `ENT_COEF` | 0.01 | replaces epsilon-greedy exploration |
 | `VF_COEF` | 0.5 | |
 | `MAX_GRAD_NORM` | 0.5 | |
-| `TARGET_KL` | 0.03 | one categorical macro-action head |
+| `TARGET_KL` | 0.03 | seven-button heads |
 | `EPOCHS` / `MINIBATCH_SIZE` | 4 / 128 | 16 gradient steps per update |
 
-The network is a shared 504→256→256 tanh trunk with orthogonal initialisation,
-one 12-way categorical head (gain 0.01) and one critic head (gain 1.0).
+The network is a shared 472→256→256 tanh trunk with orthogonal initialisation,
+seven button heads (gain 0.01) and one critic head (gain 1.0).
 
 ### Reading the monitor
 
@@ -450,13 +449,13 @@ plotted against someone else's history — archive them as a pair.
 
 ## Known rough edges
 
-- **Move classification depends on the Control FSM state.** `boss_move()` keys off
-  Pure Vessel's PlayMaker `Control` FSM `ActiveStateName`; a different boss needs
+- **Move classification depends on the Mantis FSM state.** `boss_move()` keys off
+  Traitor Lord's PlayMaker `Mantis` FSM `ActiveStateName`; a different boss needs
   its own state-to-move map (see `agent/action.py:_FSM_TO_MOVE`).
 - **Reset costs ~9 s of fixed sleep per episode**, on top of the menu navigation.
   The surrounding comments describe a state-driven wait that the code does not
   currently do.
-- **The feature-name list** in `state_vector_viewer.py` is maintained by hand.
+- **The feature-name list** is defined by `enviroment/state_to_vector.py`; keep its order in sync with the mod wire format.
 - **One environment per process.** Ports are configurable, but running several
   games still requires separate game processes/directories and isolated saves/logs.
   See `MULTI_ENV_WINDOWS.md` before attempting vector collection.

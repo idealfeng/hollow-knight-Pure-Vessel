@@ -238,6 +238,8 @@ def main():
             "validation_ones": int(val_actions[:, i].sum()),
             "validation_recall": (float((predictions[:, i][val_targets[:, i]]).mean())
                                   if val_targets[:, i].any() else None),
+            "validation_precision": (float((val_targets[:, i][predictions[:, i]]).mean())
+                                     if predictions[:, i].any() else None),
         }
         for i, name in enumerate(BUTTON_ORDER)
     }

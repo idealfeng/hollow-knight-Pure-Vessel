@@ -92,7 +92,7 @@ def reset_environment(state=None, attempts=4, return_details=False):
 
     def success(attempt):
         controls.release_all()
-        # Boss HP appears about 13 game seconds before the Pure Vessel intro
+        # Boss HP appears about 13 game seconds before the Traitor Lord intro
         # ends. Those frames cannot teach combat and previously consumed a
         # large fraction of every rollout as idle/missed attacks.
         if not wait_until(state_is_combat_ready, timeout=game_seconds(22.0)):
