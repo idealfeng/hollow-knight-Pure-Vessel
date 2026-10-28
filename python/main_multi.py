@@ -1,7 +1,9 @@
 """Central PPO learner for multiple live Hollow Knight game processes."""
 
 import argparse
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
+import json
 import math
 import multiprocessing as mp
 from multiprocessing.connection import wait
@@ -25,7 +27,7 @@ from rollout_buffer import VectorRolloutBuffer
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CHECKPOINT_FORMAT = 3
+CHECKPOINT_FORMAT = 5
 MODEL_HIDDEN = 256
 ACTION_SIZES = [len(MACRO_ACTION_NAMES)]
 
@@ -288,10 +290,16 @@ def parse_args():
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--episode-time-limit", type=float, default=60.0)
     parser.add_argument("--game-speed", type=float, default=2.0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument("--steps-per-env", type=int, default=0,
                         help="0 chooses about 2048 total transitions/update")
     parser.add_argument("--total-updates", type=int, default=10000)
     parser.add_argument("--run-dir", default="")
+    parser.add_argument("--freeze-obs-norm", action="store_true",
+                        help="keep the loaded observation normalizer fixed during this run")
+    parser.add_argument("--stop-below-hits", type=float, default=0.0,
+                        help="stop after an update if the last 20 complete fights average fewer hits; 0 disables")
     parser.add_argument("--no-monitor", action="store_true",
                         help="run in the terminal without the Tk dashboard")
     args = parser.parse_args()
@@ -306,21 +314,28 @@ def parse_args():
         parser.error("game-speed must be in 0.5..4.0")
     if args.steps_per_env < 0:
         parser.error("steps-per-env must be 0 or positive")
+    if args.torch_threads < 1:
+        parser.error("torch-threads must be positive")
+    if not math.isfinite(args.stop_below_hits) or args.stop_below_hits < 0:
+        parser.error("stop-below-hits must be finite and nonnegative")
     return args
 
 
 def main():
     args = parse_args()
+    torch.set_num_threads(args.torch_threads)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
     num_envs = len(args.ports)
     steps_per_env = args.steps_per_env or default_steps_per_env(num_envs)
-    # Earlier checkpoints were collected through the boss intro and with
-    # invalid/missing body boxes. Start a separate run by default so those
-    # weights are not silently resumed under the corrected observation stream.
-    run_name = "combat_ready_bodybox_" + "_".join(str(port) for port in args.ports)
+    # Boss relative position now uses the body-box centre rather than the
+    # HealthManager root. Keep those observation semantics in a new run.
+    run_name = "body_center_v3_" + "_".join(str(port) for port in args.ports)
     run_dir = os.path.abspath(args.run_dir or os.path.join(SCRIPT_DIR, "runs", run_name))
     os.makedirs(run_dir, exist_ok=True)
     checkpoint_path = os.path.join(run_dir, "ppo_checkpoint.pth")
     history_path = os.path.join(run_dir, "monitor_history.npz")
+    metrics_path = os.path.join(run_dir, "training_metrics.jsonl")
 
     print(
         f"starting {num_envs} environments on ports {args.ports}; "
@@ -365,6 +380,8 @@ def main():
     global_step = 0
     episode = 0
     resumed = os.path.exists(checkpoint_path)
+    freeze_obs_norm = args.freeze_obs_norm
+    pretraining = None
 
     if resumed:
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -389,10 +406,18 @@ def main():
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         obs_norm.load_state_dict(checkpoint["obs_norm"])
+        freeze_obs_norm = freeze_obs_norm or checkpoint.get("freeze_obs_norm", False)
+        pretraining = checkpoint.get("pretraining")
         start_update = int(checkpoint["update"]) + 1
         global_step = int(checkpoint["global_step"])
         episode = int(checkpoint["episode"])
         print(f"resumed at update {start_update}, step {global_step}")
+
+    if freeze_obs_norm and not resumed:
+        pool.close()
+        raise SystemExit("--freeze-obs-norm requires a checkpoint with fitted statistics")
+    if freeze_obs_norm:
+        print("observation normalization: fixed checkpoint statistics")
 
     monitor = None
     if not args.no_monitor:
@@ -415,10 +440,17 @@ def main():
 
     episode_rewards = [0.0] * num_envs
     episode_steps = [0] * num_envs
+    episode_actions = [Counter() for _ in range(num_envs)]
+    episode_reward_parts = [Counter() for _ in range(num_envs)]
+    recent_hits = deque(maxlen=20)
     needs_reset = [False] * num_envs
 
+    def log_metrics(record):
+        with open(metrics_path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, default=float) + "\n")
+
     def observe(raw, update=True):
-        if update:
+        if update and not freeze_obs_norm:
             obs_norm.update(raw)
         return obs_norm.normalize(raw)
 
@@ -436,6 +468,15 @@ def main():
                 won=info["won"],
             )
         episode += 1
+        recent_hits.append(info["hits"])
+        log_metrics({
+            **info,
+            "event": "episode", "episode": episode,
+            "global_step": global_step, "env": env_index,
+            "reward": episode_rewards[env_index], "steps": episode_steps[env_index],
+            "actions": {name: episode_actions[env_index][name] for name in MACRO_ACTION_NAMES},
+            "reward_parts": dict(episode_reward_parts[env_index]),
+        })
         print(
             f"ep {episode:5d} | env {env_index} port {args.ports[env_index]} | "
             f"reward {episode_rewards[env_index]:+.2f} | "
@@ -445,6 +486,8 @@ def main():
         )
         episode_rewards[env_index] = 0.0
         episode_steps[env_index] = 0
+        episode_actions[env_index].clear()
+        episode_reward_parts[env_index].clear()
 
     def save_checkpoint(update):
         checkpoint = {
@@ -461,6 +504,8 @@ def main():
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "obs_norm": obs_norm.state_dict(),
+            "freeze_obs_norm": freeze_obs_norm,
+            "pretraining": pretraining,
             "update": update,
             "global_step": global_step,
             "episode": episode,
@@ -552,6 +597,8 @@ def main():
                         global_step += 1
                         episode_rewards[env_index] += reward
                         episode_steps[env_index] += 1
+                        episode_actions[env_index][MACRO_ACTION_NAMES[meta["action"][0]]] += 1
+                        episode_reward_parts[env_index].update(info.get("reward_parts", {}))
 
                         if done:
                             add_episode(info, env_index)
@@ -590,6 +637,11 @@ def main():
                 )
 
                 elapsed = time.perf_counter() - update_started
+                log_metrics({"event": "update", "update": update,
+                             "global_step": global_step, "episode": episode,
+                             "elapsed_seconds": elapsed,
+                             "reset_seconds": update_reset_seconds,
+                             "reset_retries": update_reset_retries, **(stats or {})})
                 throughput = len(buffer) / max(elapsed, 1e-6)
                 if stats is not None:
                     if monitor is not None:
@@ -604,6 +656,15 @@ def main():
 
                 if update % SAVE_EVERY_UPDATES == 0:
                     save_checkpoint(update)
+                if (args.stop_below_hits > 0 and len(recent_hits) == recent_hits.maxlen
+                        and np.mean(recent_hits) < args.stop_below_hits):
+                    mean_hits = float(np.mean(recent_hits))
+                    log_metrics({"event": "regression_stop", "update": update,
+                                 "recent_mean_hits": mean_hits,
+                                 "threshold": args.stop_below_hits})
+                    print(f"stopped: last 20 fights averaged {mean_hits:.2f} hits "
+                          f"(< {args.stop_below_hits:g}); checkpoint saved", flush=True)
+                    break
         finally:
             pool.close()
 

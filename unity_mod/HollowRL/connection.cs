@@ -14,7 +14,7 @@ using Bounds = UnityEngine.Bounds;
 
 
 [BepInPlugin("com.AbdulAzizOM.HollowRL", "HollowRL", "1.0.0")]
-public class HollowRL : BaseUnityPlugin
+public partial class HollowRL : BaseUnityPlugin
 {
     private TcpListener server;
     private Thread serverThread;
@@ -717,6 +717,7 @@ public class HollowRL : BaseUnityPlugin
     {
         try
         {
+            client.NoDelay = true;
             StreamReader reader = new StreamReader(client.GetStream());
             StreamWriter writer = new StreamWriter(client.GetStream());
 
@@ -735,6 +736,9 @@ public class HollowRL : BaseUnityPlugin
                 // inside the game process, of all places.
                 if (command == null)
                     break;
+
+                if (HandleDemonstrationCommand(client, command, writer))
+                    continue;
 
                 // Anything that is not a state request is an input command.
                 if (!command.StartsWith("pos"))
@@ -755,6 +759,7 @@ public class HollowRL : BaseUnityPlugin
         }
         finally
         {
+            StopDemonstrationOnDisconnect(client);
             // A trainer that crashes mid-episode must not leave the knight
             // holding `left` for the rest of the session.
             InputInjector.ReleaseAll();
@@ -778,6 +783,9 @@ public class HollowRL : BaseUnityPlugin
     {
         string[] parts = command.Trim().Split(' ');
         string verb = parts[0].ToUpperInvariant();
+
+        if (DemonstrationActive)
+            return "err human demonstration active; stop the recorder before injecting controls";
 
         if (verb == "CLEAR" || verb == "KILL")
         {
@@ -934,7 +942,12 @@ public class HollowRL : BaseUnityPlugin
     /// </summary>
     private string BuildStateLine()
     {
-        StateSnapshot s = TakeSnapshot();
+        return BuildStateLine(TakeSnapshot());
+    }
+
+
+    private string BuildStateLine(StateSnapshot s)
+    {
 
         var sb = new StringBuilder();
         if (s.KnightPresent)

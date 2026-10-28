@@ -19,3 +19,4 @@ runs/
 
 # Local tooling
 .claude/settings.local.json
+mod_backups/

@@ -125,6 +125,7 @@ class RewardTracker:
         self.misses = 0
         self.staggers = 0
         self.dodges = 0
+        self.last_breakdown = []
 
     def transition(self, previous_state, current_state, done,
                    timed_out=False, step_dt=1.0 / 10.0,
@@ -173,13 +174,14 @@ class RewardTracker:
                 and boss_move(previous_state) != PureVesselMove.STUN):
             self.staggers += 1
 
-        return calculate_reward(
+        reward, self.last_breakdown = calculate_reward(
             previous_state,
             current_state,
             done,
             timed_out=timed_out,
-            return_breakdown=return_breakdown,
+            return_breakdown=True,
             step_dt=step_dt,
             missed_attack=missed_attack,
             successful_dodge=successful_dodge,
         )
+        return (reward, self.last_breakdown) if return_breakdown else reward

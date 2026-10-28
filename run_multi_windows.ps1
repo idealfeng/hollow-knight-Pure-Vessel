@@ -11,6 +11,8 @@ param(
     [int]$StepsPerEnv = 0,
     [ValidateRange(1, 1000000)]
     [int]$TotalUpdates = 10000,
+    [ValidateRange(0, 10000)]
+    [double]$StopBelowHits = 0,
     [switch]$NoMonitor,
     [ValidateRange(3.0, 15.0)]
     [double]$DeathSettleWait = 7.0,
@@ -39,6 +41,9 @@ $arguments += @(
     "--game-speed", "$GameSpeed",
     "--total-updates", "$TotalUpdates"
 )
+if ($StopBelowHits -gt 0) {
+    $arguments += @("--stop-below-hits", "$StopBelowHits")
+}
 if ($NoMonitor) {
     $arguments += "--no-monitor"
 }
@@ -60,7 +65,7 @@ try {
     $env:HOLLOWRL_DEATH_SETTLE_WAIT = "$DeathSettleWait"
     $env:HOLLOWRL_POST_LEFT_WAIT = "$PostLeftWait"
     Write-Host "Central PPO trainer: ports=$($Ports -join ',')"
-    & $pythonExe @arguments
+    & $pythonExe -u @arguments
     exit $LASTEXITCODE
 }
 finally {

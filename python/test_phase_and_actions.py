@@ -7,6 +7,7 @@ from agent.action import (
     boss_move, boss_phase, execute_macro_action,
 )
 from agent.reward import CLEAN_DODGE, EMPTY_ATTACK, RewardTracker, calculate_reward
+from agent.scripted_policy import approach_action
 from enviroment.state_to_vector import BASE_FEATURES, OBSERVATION_SIZE, state_to_vector
 
 
@@ -149,6 +150,36 @@ print("== 4. observation ==")
 vector = state_to_vector(make_state(), time_frac=0.5)
 check("base features include FSM age", BASE_FEATURES == 62)
 check("observation is 126 values", OBSERVATION_SIZE == 126 and len(vector) == 126)
+body_state = make_state(boss_position=(52.0, 9.0),
+                        boss_box=(60.0, 10.0, 64.0, 16.0))
+body_vector = state_to_vector(body_state)
+check("boss offset follows body collider centre",
+      body_vector[24] == 21.0 and body_vector[25] == 8.0)
+body_state["boss_box"] = None
+root_vector = state_to_vector(body_state)
+check("boss offset falls back to root during teleport",
+      root_vector[24] == 11.0 and root_vector[25] == 4.0)
+for boss_right, facing_left in ((True, True), (True, False), (False, True), (False, False)):
+    box = (50.0, 4.0, 52.0, 6.0) if boss_right else (30.0, 4.0, 32.0, 6.0)
+    observed = state_to_vector(make_state(boss_box=box, boss_facing_left=facing_left))[31]
+    check(f"boss facing knight: right={boss_right}, left-facing={facing_left}",
+          bool(observed) == (boss_right == facing_left))
+
+print("== 5. deterministic reachability baseline ==")
+check("approach policy closes a large gap",
+      approach_action(make_state()) == MacroAction.MOVE_RIGHT)
+near_right = make_state(boss_box=(42.5, 4.0, 44.5, 6.0))
+check("approach policy attacks a nearby body",
+      approach_action(near_right) == MacroAction.ATTACK_RIGHT)
+check("approach policy waits while a swing is active",
+      approach_action(make_state(boss_box=(42.5, 4.0, 44.5, 6.0),
+                                 attacking=True)) == MacroAction.IDLE)
+check("approach policy does not swing at a missing body",
+      approach_action(make_state(boss_box=None)) == MacroAction.MOVE_RIGHT)
+check("aligned approach turns toward body before swinging",
+      approach_action(make_state(boss_box=(42.5, 4.0, 44.5, 6.0),
+                                 knight_facing_right=False),
+                      require_facing=True) == MacroAction.MOVE_RIGHT)
 
 print()
 failed = sum(not result for result in results)

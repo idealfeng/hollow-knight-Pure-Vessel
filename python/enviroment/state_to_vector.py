@@ -184,18 +184,24 @@ def state_to_vector(state, time_frac=0.0):
 
     if boss_present:
         boss_hp_obs = state["boss_health"] if state["boss_health"] >= 0 else 0
-        bx, by = state["boss_position"]
+        # HealthManager's root transform is not always the body centre:
+        # Pure Vessel's pose colliders can be offset by a few game units.
+        # Use the live body box for aiming, with the root as the fallback
+        # during teleport frames when no body collider is enabled.
+        boss_box = state["boss_box"]
+        bx, by = (box_center(boss_box) if boss_box is not None
+                  else state["boss_position"])
         boss_dx, boss_dy = _clip(bx - kx), _clip(by - ky)
         bvx, bvy = state["boss_velocity"]
         boss_rel_vx, boss_rel_vy = _clip(bvx - kvx), _clip(bvy - kvy)
-        if state["boss_box"] is not None:
-            bmin_x, bmin_y, bmax_x, bmax_y = state["boss_box"]
+        if boss_box is not None:
+            bmin_x, bmin_y, bmax_x, bmax_y = boss_box
             boss_width, boss_height = bmax_x - bmin_x, bmax_y - bmin_y
         else:
             boss_width = boss_height = 0.0
         boss_facing_left = int(state["boss_facing_left"])
-        boss_faces_knight = int((boss_dx < 0 and boss_facing_left)
-                                or (boss_dx > 0 and not boss_facing_left))
+        boss_faces_knight = int((boss_dx > 0 and boss_facing_left)
+                                or (boss_dx < 0 and not boss_facing_left))
         knight_faces_boss = int((boss_dx > 0 and state["knight_facing_right"])
                                 or (boss_dx < 0 and not state["knight_facing_right"]))
     else:

@@ -133,6 +133,7 @@ class HollowKnightEnv(gym.Env):
             "misses": self.reward_tracker.misses,
             "staggers": self.reward_tracker.staggers,
             "dodges": self.reward_tracker.dodges,
+            "reward_parts": dict(self.reward_tracker.last_breakdown),
             "won": bool(won),
             "truncated_reason": truncated_reason,
             "reset_seconds": self.last_reset_seconds,
@@ -212,7 +213,9 @@ class HollowKnightEnv(gym.Env):
             self.state, self.raw_observation = state, raw
 
         previous = self.state
+        step_started = time.perf_counter()
         execute_macro_action(action)
+        action_seconds = time.perf_counter() - step_started
 
         next_step = self.episode_steps + 1
         timed_out = next_step * self.step_dt >= self.episode_time_limit
@@ -261,7 +264,10 @@ class HollowKnightEnv(gym.Env):
 
         stacked = self.stacker.append(raw)
         reason = "timeout" if timed_out else ("disconnect" if disconnected else None)
-        return stacked, reward, terminated, truncated, self._info(won, reason)
+        info = self._info(won, reason)
+        info["action_wall_seconds"] = action_seconds
+        info["step_wall_seconds"] = time.perf_counter() - step_started
+        return stacked, reward, terminated, truncated, info
 
     def close(self):
         controls.release_all()

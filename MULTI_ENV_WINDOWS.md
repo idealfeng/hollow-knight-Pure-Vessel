@@ -108,7 +108,7 @@ Pure Vessel 训练存档和已知雕像坐标。若位置不符，训练器会�
 和曲线写入独立目录：
 
 ```text
-python\runs\combat_ready_bodybox_9001_9002\
+python\runs\body_center_v3_9001_9002\
 ```
 
 旧实验 `python\runs\multi_9001_9002\` 保留，仅供对照：当时每局约 13 游戏秒的 Boss
@@ -116,6 +116,10 @@ python\runs\combat_ready_bodybox_9001_9002\
 `Intro` 且真实身体碰撞盒出现后才开始采样；Mod 不再把技能探测范围的 trigger 当作身体框。
 传送期间身体框可能暂时缺失，此时距离奖励跳过该帧。新目录也不会覆盖单环境的
 `python\ppo_checkpoint.pth`。
+
+`python\runs\combat_ready_bodybox_9001_9002\` 也保留：它已经跳过开场并读到身体框，
+但策略的相对 Boss 坐标仍来自根节点。v2 改为使用身体框中心，传送期间才回退到根节点；
+观测含义改变，因此单独开始新 checkpoint。
 
 三个环境可用：
 
@@ -158,6 +162,10 @@ step/s | reset 31.2s/2 retries
 7 秒和 2 秒，不会因为启用多环境而冒险加快菜单输入。
 
 ## 实现约束
+
+当前 checkpoint 格式为 5：在身体框中心坐标修复的基础上，修正了“Boss 是否朝向小骑士”
+的左右判断。格式 4 的示范可由 `python/train_bc.py` 按原始位置和朝向迁移；旧网络不能直接续接。
+模仿学习与本机对照实验的结果、路径和续训命令见 [TRAINING_DIAGNOSIS.md](TRAINING_DIAGNOSIS.md)。
 
 - 每个 worker 在导入 `game_state` 前设置自己的 `HOLLOWRL_PORT`。
 - rollout 期间模型参数固定，收集结束后中央进程才更新。
