@@ -12,6 +12,7 @@ import time
 import controls
 import game_state as game_reader
 from agent.action import is_intro_state
+from agent.calc import box_center
 
 # Waits before the menu is reachable. Both are blind sleeps rather than waits
 # on observed state: nothing the mod reports distinguishes "death animation
@@ -26,6 +27,43 @@ RETRY_WAIT = float(os.environ.get("HOLLOWRL_RETRY_WAIT", "3.0"))
 # How long the fight has to keep looking alive before we believe it. Guards
 # against the one frame of "live" state that appears mid-transition.
 STABLE_DURATION = 0.5
+TRAITOR_STATUE_X = 188.2
+
+
+def statue_position():
+    """Recognise the known training statue area, not the boss arena."""
+    if (game_reader.knight_box is None or game_reader.knight_health <= 0
+            or game_reader.boss_health > 0):
+        return None
+    x, y = box_center(game_reader.knight_box)
+    return x if 170.0 <= x <= 205.0 and 4.0 <= y <= 9.0 else None
+
+
+def align_with_statue(timeout=5.0):
+    """Recover small accidental walks before opening the challenge prompt."""
+    deadline = time.perf_counter() + timeout
+    try:
+        while time.perf_counter() < deadline:
+            x = statue_position()
+            if x is None:
+                return False
+            if abs(x - TRAITOR_STATUE_X) <= 0.6:
+                return True
+            direction = "right" if x < TRAITOR_STATUE_X else "left"
+            controls.key_up("left" if direction == "right" else "right")
+            controls.key_down(direction)
+            time.sleep(0.03)
+        return False
+    finally:
+        controls.release_all()
+
+
+def reset_diagnostics():
+    center = (box_center(game_reader.knight_box)
+              if game_reader.knight_box is not None else None)
+    return {"knight_health": game_reader.knight_health,
+            "boss_health": game_reader.boss_health, "knight_center": center,
+            "boss_fsm": game_reader.boss_control_state}
 
 
 def game_seconds(seconds):
@@ -111,16 +149,33 @@ def reset_environment(state=None, attempts=4, return_details=False):
         }
         return result if return_details else True
 
-    time.sleep(DEATH_SETTLE_WAIT)
-
-    tap("left")
-    time.sleep(POST_LEFT_WAIT)
+    # Godhome may restore HP before the death transition has finished. Wait
+    # for the actual statue coordinates instead of guessing a menu time.
+    statue_mode = wait_until(lambda: statue_position() is not None,
+                             timeout=DEATH_SETTLE_WAIT + POST_LEFT_WAIT + 3.0)
+    if statue_mode:
+        if not align_with_statue():
+            result = {"ok": False, "attempts": 0,
+                      "seconds": time.perf_counter() - started,
+                      "diagnostics": reset_diagnostics()}
+            return result if return_details else False
+    else:
+        # Compatibility path for saves whose return position is not the
+        # known Traitor Lord statue area.
+        time.sleep(DEATH_SETTLE_WAIT)
+        tap("left")
+        time.sleep(POST_LEFT_WAIT)
 
     for attempt in range(1, attempts + 1):
-        tap("up", after=game_seconds(MENU_STEP_WAIT))
-        tap("submit", after=0)
+        if state_is_live() and state_is_stable():
+            return success(attempt)
+        controls.release_all()
+        tap("up", hold=0.12 if statue_mode else 0.06,
+            after=game_seconds(1.2 if statue_mode else MENU_STEP_WAIT))
+        tap("submit", hold=0.12 if statue_mode else 0.06, after=0)
 
-        if (wait_until(state_is_live, timeout=game_seconds(FIGHT_LOAD_TIMEOUT))
+        if (wait_until(state_is_live, timeout=game_seconds(
+                max(FIGHT_LOAD_TIMEOUT, 8.0) if statue_mode else FIGHT_LOAD_TIMEOUT))
                 and state_is_stable()):
             return success(attempt)
 
@@ -135,9 +190,11 @@ def reset_environment(state=None, attempts=4, return_details=False):
     # Focus is no longer a possible cause - input goes straight into the game
     # process now - so a failure here means the menu is not where we think.
     print("*** RESET FAILED - is the game sitting on the death/retry menu? ***")
+    print(f"reset state: {reset_diagnostics()}")
     result = {
         "ok": False,
         "attempts": attempts,
         "seconds": time.perf_counter() - started,
+        "diagnostics": reset_diagnostics(),
     }
     return result if return_details else False

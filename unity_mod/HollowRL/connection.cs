@@ -116,6 +116,21 @@ public partial class HollowRL : BaseUnityPlugin
     }
 
 
+    private static string ResolveBindIp()
+    {
+        // Default to loopback so a single-machine setup behaves exactly as
+        // before. Remote workers pass --hollowrl-bind-ip=HOST to listen on a
+        // specific address; never fall back to IPAddress.Any.
+        foreach (string arg in Environment.GetCommandLineArgs())
+        {
+            const string prefix = "--hollowrl-bind-ip=";
+            if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return arg.Substring(prefix.Length);
+        }
+        return "127.0.0.1";
+    }
+
+
     private static int ResolveFrameRate()
     {
         foreach (string arg in Environment.GetCommandLineArgs())
@@ -169,14 +184,25 @@ public partial class HollowRL : BaseUnityPlugin
         knightPos = gameObject.AddComponent<KnightPos.DiagnosticsOverlay>();
 
         int port = ResolvePort();
-        server = new TcpListener(IPAddress.Loopback, port);
+        string bindIp = ResolveBindIp();
+        IPAddress bindAddress;
+        try
+        {
+            bindAddress = IPAddress.Parse(bindIp);
+        }
+        catch (Exception exc)
+        {
+            Logger.LogError("HollowRL: invalid --hollowrl-bind-ip '" + bindIp + "': " + exc.Message);
+            return;
+        }
+        server = new TcpListener(bindAddress, port);
         server.Start();
 
         serverThread = new Thread(ServerLoop);
         serverThread.IsBackground = true;
         serverThread.Start();
 
-        Logger.LogInfo("TCP server started on 127.0.0.1:" + port);
+        Logger.LogInfo("TCP server started on " + bindAddress + ":" + port);
     }
 
 

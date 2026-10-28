@@ -18,6 +18,8 @@ import torch
 import torch.optim as optim
 
 from agent.action import BUTTON_ORDER, NUM_BUTTONS, is_intro_state
+from endpoints import resolve_endpoints
+from evaluation import evaluate_pool, interrupt_episode_stats
 from env_worker import env_worker_main
 from monitor import TrainingMonitor
 from obs_norm import RunningNorm
@@ -49,31 +51,39 @@ SAVE_EVERY_UPDATES = 1
 class ExternalEnvPool:
     """Small IPC pool whose children each own one socket-backed environment."""
 
-    def __init__(self, ports, control_hz, frame_stack, episode_time_limit,
+    def __init__(self, endpoints, control_hz, frame_stack, episode_time_limit,
                  game_speed):
         context = mp.get_context("spawn")
-        self.ports = tuple(int(port) for port in ports)
+        self.endpoints = [(str(host), int(port)) for host, port in endpoints]
+        self.ports = tuple(port for _, port in self.endpoints)
+        self.hosts = tuple(host for host, _ in self.endpoints)
         self.connections = []
         self.processes = []
         self.index_by_connection = {}
 
-        for index, port in enumerate(self.ports):
+        for index, (host, port) in enumerate(self.endpoints):
             parent, child = context.Pipe()
             process = context.Process(
                 target=env_worker_main,
-                args=(child, port, control_hz, frame_stack, episode_time_limit,
-                      game_speed),
-                name=f"HollowRL-env-{port}",
+                args=(child, host, port, control_hz, frame_stack,
+                      episode_time_limit, game_speed),
+                name=f"HollowRL-env-{host}-{port}",
                 daemon=True,
             )
             # On Windows the spawned interpreter imports main_multi before it
             # calls env_worker_main. Modules imported at that stage must see
-            # the worker's own port, not the default 9000.
+            # the worker's own endpoint, not the default 127.0.0.1:9000.
+            previous_host = os.environ.get("HOLLOWRL_HOST")
             previous_port = os.environ.get("HOLLOWRL_PORT")
+            os.environ["HOLLOWRL_HOST"] = host
             os.environ["HOLLOWRL_PORT"] = str(port)
             try:
                 process.start()
             finally:
+                if previous_host is None:
+                    os.environ.pop("HOLLOWRL_HOST", None)
+                else:
+                    os.environ["HOLLOWRL_HOST"] = previous_host
                 if previous_port is None:
                     os.environ.pop("HOLLOWRL_PORT", None)
                 else:
@@ -83,13 +93,15 @@ class ExternalEnvPool:
             self.processes.append(process)
             self.index_by_connection[parent] = index
 
-        for index in range(len(self.ports)):
+        for index in range(len(self.endpoints)):
+            host, port = self.endpoints[index]
             message = self.recv(index)
             if (message.get("event") != "ready"
-                    or message.get("control_port") != self.ports[index]
-                    or message.get("state_port") != self.ports[index]):
+                    or message.get("host") != host
+                    or message.get("control_port") != port
+                    or message.get("state_port") != port):
                 raise RuntimeError(
-                    f"worker {self.ports[index]} bound incorrect ports: {message}"
+                    f"worker {host}:{port} bound incorrect endpoint: {message}"
                 )
 
     def send(self, index, command, payload=None):
@@ -139,10 +151,10 @@ def default_steps_per_env(num_envs):
     return max(512, int(math.ceil(2048 / num_envs / 128.0) * 128))
 
 
-def prepare_fight(port):
+def prepare_fight(host, port):
     """Use the training save's Traitor Lord statue to start a fresh fight."""
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=4.0) as sock:
+        with socket.create_connection((host, port), timeout=4.0) as sock:
             sock.settimeout(4.0)
             with sock.makefile("rwb", buffering=0) as stream:
                 def command(value):
@@ -243,13 +255,13 @@ def prepare_fight(port):
         raise RuntimeError(f"port {port}: cannot prepare fight ({exc})") from exc
 
 
-def prepare_fights(ports):
+def prepare_fights(endpoints):
     # Check every game before pressing anything. If one window is still at
     # the title screen, leave any already staged fight frozen and intact.
     unloaded = []
-    for port in ports:
+    for host, port in endpoints:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=4.0) as sock:
+            with socket.create_connection((host, port), timeout=4.0) as sock:
                 sock.settimeout(4.0)
                 sock.sendall(b"pos\n")
                 with sock.makefile("rb") as reply:
@@ -257,22 +269,25 @@ def prepare_fights(ports):
             parts = line.split(";")
             scalars = parts[4].split(",")
             if not parts[0] or int(scalars[7]) <= 0:
-                unloaded.append(f"port {port}: no living knight; load save slot 1")
+                unloaded.append(f"{host}:{port}: no living knight; load save slot 1")
         except (OSError, IndexError, ValueError, UnicodeError) as exc:
-            unloaded.append(f"port {port}: cannot read the game state ({exc})")
+            unloaded.append(f"{host}:{port}: cannot read the game state ({exc})")
     if unloaded:
         raise SystemExit("Prepare both game windows first:\n" + "\n".join(unloaded))
 
     # Start all statues concurrently so neither idle knight must wait for
     # another game's menu sequence before the learner can begin.
-    with ThreadPoolExecutor(max_workers=len(ports)) as executor:
-        futures = {port: executor.submit(prepare_fight, port) for port in ports}
+    with ThreadPoolExecutor(max_workers=len(endpoints)) as executor:
+        futures = {
+            (host, port): executor.submit(prepare_fight, host, port)
+            for host, port in endpoints
+        }
         problems = []
-        for port, future in futures.items():
+        for (host, port), future in futures.items():
             try:
                 future.result()
             except Exception as exc:
-                problems.append(str(exc))
+                problems.append(f"{host}:{port}: {exc}")
     if problems:
         raise SystemExit(
             "Could not prepare every Traitor Lord fight:\n"
@@ -286,6 +301,8 @@ def parse_args():
         description="Train one PPO policy from multiple Hollow Knight instances."
     )
     parser.add_argument("--ports", type=int, nargs="+", default=[9001, 9002])
+    parser.add_argument("--endpoints", nargs="+", default=None,
+                        help="HOST:PORT ... game endpoints; overrides --ports")
     parser.add_argument("--control-hz", type=int, default=10)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--episode-time-limit", type=float, default=60.0)
@@ -344,28 +361,36 @@ def main():
     torch.set_num_threads(args.torch_threads)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    num_envs = len(args.ports)
+    try:
+        endpoints = resolve_endpoints(args.endpoints, args.ports)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    num_envs = len(endpoints)
+    hosts = [host for host, _ in endpoints]
+    ports = [port for _, port in endpoints]
     steps_per_env = args.steps_per_env or default_steps_per_env(num_envs)
     # Boss relative position now uses the body-box centre rather than the
     # HealthManager root. Keep those observation semantics in a new run.
-    run_name = "traitor_exclusive_v2_" + "_".join(str(port) for port in args.ports)
+    run_name = "traitor_exclusive_v2_" + "_".join(str(port) for port in ports)
     run_dir = os.path.abspath(args.run_dir or os.path.join(SCRIPT_DIR, "runs", run_name))
     os.makedirs(run_dir, exist_ok=True)
     checkpoint_path = os.path.join(run_dir, "ppo_checkpoint.pth")
     history_path = os.path.join(run_dir, "monitor_history.npz")
     metrics_path = os.path.join(run_dir, "training_metrics.jsonl")
     eval_metrics_path = os.path.join(run_dir, "eval_metrics.jsonl")
+    best_eval_path = os.path.join(run_dir, "best_eval.json")
 
     print(
-        f"starting {num_envs} environments on ports {args.ports}; "
+        f"starting {num_envs} environments on "
+        f"{', '.join(f'{h}:{p}' for h, p in endpoints)}; "
         f"{steps_per_env} steps/env = {steps_per_env * num_envs} transitions/update"
     )
     print(f"run artifacts: {run_dir}")
 
-    prepare_fights(args.ports)
+    prepare_fights(endpoints)
 
     pool = ExternalEnvPool(
-        args.ports, args.control_hz, args.frame_stack,
+        endpoints, args.control_hz, args.frame_stack,
         args.episode_time_limit, args.game_speed
     )
 
@@ -421,7 +446,11 @@ def main():
             "frame_stack": args.frame_stack,
             "action_names": list(BUTTON_ORDER),
             "model_hidden": MODEL_HIDDEN,
-            "num_envs": num_envs,
+            # num_envs is intentionally NOT validated: the BC checkpoint records
+            # the environment count it was created with (e.g. 2), but the model
+            # weights and observation normalizer are independent of that count,
+            # so the same checkpoint can seed a run with a different number of
+            # environments.
             "action_distribution": "exclusive_directions_v1",
         }
         mismatches = [
@@ -486,66 +515,95 @@ def main():
         with open(metrics_path, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, default=float) + "\n")
 
+    run_config = {
+        **vars(args), "endpoints": [f"{host}:{port}" for host, port in endpoints],
+        "steps_per_env": steps_per_env, "num_envs": num_envs,
+        "batch_size": steps_per_env * num_envs, "observation_size": state_size,
+        "format_version": CHECKPOINT_FORMAT, "init_source": init_source,
+        "freeze_obs_norm": freeze_obs_norm, "start_update": start_update,
+        "gamma": GAMMA, "gae_lambda": GAE_LAMBDA, "clip_eps": CLIP_EPS,
+        "target_kl": TARGET_KL, "epochs": EPOCHS,
+        "minibatch_size": MINIBATCH_SIZE, "reward_scale": REWARD_SCALE,
+        "started_at_unix": time.time(),
+    }
+    with open(os.path.join(run_dir, "run_config.json"), "w", encoding="utf-8") as stream:
+        json.dump(run_config, stream, indent=2)
+    log_metrics({"event": "run_start", **run_config})
+    best_eval_score = None
+    if os.path.isfile(best_eval_path):
+        with open(best_eval_path, encoding="utf-8") as stream:
+            best_eval_score = tuple(json.load(stream)["selection_score"])
+
     def observe(raw, update=True):
         if update and not freeze_obs_norm:
             obs_norm.update(raw)
         return obs_norm.normalize(raw)
 
     def run_greedy_eval(update):
-        """Deterministic progress check: play each env with greedy_act, no
-        buffer writes, no obs_norm updates and no gradient step. Results are
-        appended to eval_metrics.jsonl so progress can be judged on a fixed
-        policy rather than exploratory training rollouts."""
+        """Evaluate all workers concurrently and preserve the best evaluated policy."""
+        nonlocal best_eval_score
+        started = time.perf_counter()
+        for partial in interrupt_episode_stats(
+                episode_rewards, episode_steps, episode_actions, episode_reward_parts):
+            log_metrics({"event": "episode_interrupted", "reason": "greedy_eval",
+                         "update": update, "global_step": global_step, **partial})
+        for env_index in range(num_envs):
+            needs_reset[env_index] = True
+
+        def record_result(result):
+            index = result["env"]
+            info = result["info"]
+            record = {
+                "event": "greedy_eval", "update": update, "global_step": global_step,
+                "env": index, "host": hosts[index], "port": ports[index],
+                "episode_in_eval": result["episode_in_eval"],
+                "reward": result["reward"], "steps": result["steps"],
+                **{key: info.get(key) for key in (
+                    "hits", "damage", "misses", "staggers", "min_boss_health",
+                    "won", "truncated_reason")},
+            }
+            with open(eval_metrics_path, "a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, default=float) + "\n")
+            print(f"greedy eval upd {update} | env {index} {hosts[index]}:{ports[index]} | "
+                  f"hits {info.get('hits')} | min_boss_hp {info.get('min_boss_health')} | "
+                  f"won {bool(info.get('won'))}", flush=True)
+
         model.eval()
         try:
-            for env_index in range(num_envs):
-                for ep_index in range(args.eval_episodes):
-                    pool.send(env_index, "reset")
-                    obs, _ = pool.recv(env_index)
-                    pool.send(env_index, "start")
-                    pool.recv(env_index)
-                    episode_reward = 0.0
-                    episode_steps = 0
-                    done = False
-                    info = {}
-                    while not done:
-                        action = model.greedy_act(observe(obs, update=False))
-                        pool.send(env_index, "step", action)
-                        obs, reward, terminated, truncated, info = pool.recv(env_index)
-                        episode_reward += reward
-                        episode_steps += 1
-                        done = bool(terminated or truncated)
-                    record = {
-                        "event": "greedy_eval",
-                        "update": update,
-                        "global_step": global_step,
-                        "env": env_index,
-                        "port": args.ports[env_index],
-                        "episode_in_eval": ep_index + 1,
-                        "reward": episode_reward,
-                        "steps": episode_steps,
-                        "hits": info.get("hits"),
-                        "damage": info.get("damage"),
-                        "misses": info.get("misses"),
-                        "staggers": info.get("staggers"),
-                        "min_boss_health": info.get("min_boss_health"),
-                        "won": info.get("won"),
-                    }
-                    with open(eval_metrics_path, "a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(record, default=float) + "\n")
-                    print(
-                        f"greedy eval upd {update} | env {env_index} "
-                        f"port {args.ports[env_index]} | ep {ep_index + 1} | "
-                        f"reward {episode_reward:+.2f} | hits {info.get('hits')} | "
-                        f"damage {info.get('damage')} | "
-                        f"min_boss_hp {info.get('min_boss_health')} | "
-                        f"won {bool(info.get('won'))}",
-                        flush=True,
-                    )
-            for env_index in range(num_envs):
-                needs_reset[env_index] = True
+            results = evaluate_pool(
+                pool, model, lambda raw: observe(raw, update=False),
+                args.eval_episodes, record_result,
+            )
         finally:
             model.train()
+        valid = all(result["info"].get("truncated_reason") != "disconnect"
+                    and result["info"].get("min_boss_health") is not None
+                    for result in results)
+        summary = {
+            "event": "eval_summary", "update": update, "global_step": global_step,
+            "episodes": len(results), "valid": valid,
+            "elapsed_seconds": time.perf_counter() - started,
+            "win_rate": float(np.mean([r["info"].get("won", False) for r in results])),
+            "mean_hits": float(np.mean([r["info"]["hits"] for r in results])),
+            "mean_reward": float(np.mean([r["reward"] for r in results])),
+            "mean_min_boss_hp": float(np.mean([
+                r["info"].get("min_boss_health") or 0 for r in results])),
+        }
+        score = (summary["win_rate"], -summary["mean_min_boss_hp"], summary["mean_reward"])
+        summary["selection_score"] = list(score)
+        improved = valid and (best_eval_score is None or score > best_eval_score)
+        summary["new_best"] = improved
+        if improved:
+            save_checkpoint(update, os.path.join(run_dir, "best_eval_checkpoint.pth"), summary)
+            temporary = best_eval_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as stream:
+                json.dump(summary, stream, indent=2)
+            os.replace(temporary, best_eval_path)
+            best_eval_score = score
+        log_metrics(summary)
+        print(f"eval summary upd {update} | wins {summary['win_rate']:.0%} | "
+              f"hits {summary['mean_hits']:.2f} | boss_hp {summary['mean_min_boss_hp']:.1f} | "
+              f"best={improved}", flush=True)
 
     def add_episode(info, env_index):
         nonlocal episode
@@ -564,6 +622,7 @@ def main():
         recent_hits.append(info["hits"])
         log_metrics({
             **info,
+            "host": hosts[env_index],
             "event": "episode", "episode": episode,
             "global_step": global_step, "env": env_index,
             "reward": episode_rewards[env_index], "steps": episode_steps[env_index],
@@ -571,7 +630,7 @@ def main():
             "reward_parts": dict(episode_reward_parts[env_index]),
         })
         print(
-            f"ep {episode:5d} | env {env_index} port {args.ports[env_index]} | "
+            f"ep {episode:5d} | env {env_index} {hosts[env_index]}:{ports[env_index]} | "
             f"reward {episode_rewards[env_index]:+.2f} | "
             f"steps {episode_steps[env_index]} | hits {info['hits']} | "
             f"damage {info['damage']} | misses {info['misses']} | "
@@ -582,7 +641,7 @@ def main():
         episode_actions[env_index].clear()
         episode_reward_parts[env_index].clear()
 
-    def save_checkpoint(update):
+    def save_checkpoint(update, destination=None, evaluation=None):
         checkpoint = {
             "format_version": CHECKPOINT_FORMAT,
             "observation_size": state_size,
@@ -592,7 +651,10 @@ def main():
             "model_hidden": MODEL_HIDDEN,
             "num_envs": num_envs,
             "action_distribution": "exclusive_directions_v1",
-            "ports": list(args.ports),
+            "ports": list(ports),
+            "endpoints": [f"{host}:{port}" for host, port in endpoints],
+            "training_config": run_config,
+            "evaluation": evaluation,
             "steps_per_env": steps_per_env,
             "control_hz": args.control_hz,
             "model": model.state_dict(),
@@ -604,9 +666,10 @@ def main():
             "global_step": global_step,
             "episode": episode,
         }
-        temporary_path = checkpoint_path + ".tmp"
+        destination = destination or checkpoint_path
+        temporary_path = destination + ".tmp"
         torch.save(checkpoint, temporary_path)
-        os.replace(temporary_path, checkpoint_path)
+        os.replace(temporary_path, destination)
 
     def train_loop():
         nonlocal global_step
@@ -666,7 +729,7 @@ def main():
                             update_reset_retries += max(attempts - 1, 0)
                             if attempts > 1 or seconds > 12.0:
                                 print(
-                                    f"reset port {args.ports[env_index]}: "
+                                    f"reset {hosts[env_index]}:{ports[env_index]}: "
                                     f"{seconds:.1f}s, {attempts} menu attempts"
                                 )
                             if counts[env_index] < steps_per_env:
@@ -712,11 +775,13 @@ def main():
                             pool.send(env_index, "freeze")
                             pool.recv(env_index)
 
+                collection_seconds = time.perf_counter() - update_started
                 last_values = [
                     0.0 if needs_reset[i]
                     else model.value_only(observe(raw_observations[i], update=False))
                     for i in range(num_envs)
                 ]
+                ppo_started = time.perf_counter()
                 stats = ppo_update(
                     model, optimizer, buffer, last_values,
                     gamma=GAMMA,
@@ -736,6 +801,9 @@ def main():
                 log_metrics({"event": "update", "update": update,
                              "global_step": global_step, "episode": episode,
                              "elapsed_seconds": elapsed,
+                             "collection_seconds": collection_seconds,
+                             "ppo_seconds": time.perf_counter() - ppo_started,
+                             "steps_per_env": steps_per_env, "num_envs": num_envs,
                              "reset_seconds": update_reset_seconds,
                              "reset_retries": update_reset_retries, **(stats or {})})
                 throughput = len(buffer) / max(elapsed, 1e-6)

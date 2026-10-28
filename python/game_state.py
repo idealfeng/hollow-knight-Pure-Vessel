@@ -54,6 +54,11 @@ hazards = []
 hit_count_baseline = 0
 damage_count_baseline = 0
 
+# A terminal frame can disappear before the 10 Hz controller samples it.
+# Retain the first observed death until reset establishes a new episode.
+episode_death_frame = None
+_episode_tracking = False
+
 # Consecutive hits landed without taking damage. Reset by a damage tick or by
 # a new episode. Tracked here (in the polling thread, which sees every socket
 # frame) rather than in the reward function, which only samples at the control
@@ -253,6 +258,12 @@ def _publish(frame):
     global is_dashing, is_jumping, is_falling, is_on_ground, is_recoiling
     global is_touching_wall_left, is_touching_wall_right
     global can_shade_cloak_now, is_invuln
+    global episode_death_frame
+
+    if (_episode_tracking and episode_death_frame is None
+            and frame.knight_health <= 0 and frame.boss_health != 0
+            and (boss_health > 0 or frame.boss_health > 0)):
+        episode_death_frame = frame
 
     knight_box = frame.knight_box
     attacking = frame.attacking
@@ -376,6 +387,9 @@ def start():
 
 def reset_episode_counters():
     global hit_count_baseline, damage_count_baseline, hit_streak
+    global episode_death_frame, _episode_tracking
     hit_count_baseline = hit_count
     damage_count_baseline = damage_count
     hit_streak = 0
+    episode_death_frame = None
+    _episode_tracking = True

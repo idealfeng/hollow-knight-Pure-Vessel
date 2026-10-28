@@ -46,7 +46,7 @@ def main():
     obs_norm = RunningNorm(int(checkpoint["observation_size"]))
     obs_norm.load_state_dict(checkpoint["obs_norm"])
 
-    prepare_fight(args.port)
+    prepare_fight("127.0.0.1", args.port)
     env = HollowKnightEnv(control_hz=int(checkpoint.get("control_hz", 10)),
                           frame_stack=frame_stack, reuse_live_fight=True)
     results = []

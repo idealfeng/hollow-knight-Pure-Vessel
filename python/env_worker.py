@@ -10,17 +10,22 @@ import time
 import traceback
 
 
-def env_worker_main(connection, port, control_hz, frame_stack,
+def env_worker_main(connection, host, port, control_hz, frame_stack,
                     episode_time_limit, game_speed):
-    os.environ["HOLLOWRL_PORT"] = str(int(port))
+    host = str(host)
+    port = int(port)
+    os.environ["HOLLOWRL_HOST"] = host
+    os.environ["HOLLOWRL_PORT"] = str(port)
 
     # Windows spawn imports main_multi (and thus agent.action -> controls and
     # game_state) before this function runs. Correct already-imported module
     # constants before hollow_knight_env starts the state polling thread.
     import controls
     import game_state
-    controls.PORT = int(port)
-    game_state.PORT = int(port)
+    controls.HOST = host
+    controls.PORT = port
+    game_state.HOST = host
+    game_state.PORT = port
 
     from hollow_knight_env import HollowKnightEnv
 
@@ -60,7 +65,7 @@ def env_worker_main(connection, port, control_hz, frame_stack,
             episode_time_limit=episode_time_limit,
         )
         connection.send((True, {
-            "event": "ready", "port": int(port),
+            "event": "ready", "host": host, "port": port,
             "control_port": controls.PORT, "state_port": game_state.PORT,
         }))
 

@@ -3,6 +3,7 @@ param(
     [ValidateCount(1, 4)]
     [string[]]$GameDirs,
     [int[]]$Ports = @(9001, 9002),
+    [string]$BindIp = "",
     [ValidateRange(30, 120)]
     [int]$Fps = 30,
     [ValidateRange(0.5, 4.0)]
@@ -17,6 +18,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$bindIp = if ($BindIp) { $BindIp } else { "127.0.0.1" }
+$bindIpPattern = [regex]::Escape($bindIp)
 if ($GameDirs.Count -ne $Ports.Count) {
     throw "GameDirs and Ports must contain the same number of items."
 }
@@ -43,7 +46,7 @@ for ($index = 0; $index -lt $GameDirs.Count; $index++) {
     }
 
     $port = $Ports[$index]
-    $portPattern = "^\s*TCP\s+127\.0\.0\.1:$port\s+\S+\s+LISTENING\s+(\d+)\s*$"
+    $portPattern = "^\s*TCP\s+${bindIpPattern}:$port\s+\S+\s+LISTENING\s+(\d+)\s*$"
     $listeningLine = netstat -ano -p tcp | Select-String -Pattern $portPattern | Select-Object -First 1
     if ($listeningLine) {
         $null = $listeningLine.Line -match $portPattern
@@ -84,6 +87,7 @@ for ($index = 0; $index -lt $GameDirs.Count; $index++) {
 
     $gameArguments = @(
         "--hollowrl-port=$($Ports[$index])",
+        "--hollowrl-bind-ip=$bindIp",
         "--hollowrl-fps=$Fps",
         "--hollowrl-speed=$GameSpeed",
         "--hollowrl-boss-name=`"$BossName`"",
@@ -118,7 +122,7 @@ foreach ($instance in $launched) {
             }
             throw "Environment $($instance.Index) exited before port $($instance.Port) was ready. See $playerLog`n$hint"
         }
-        $portPattern = "^\s*TCP\s+127\.0\.0\.1:$($instance.Port)\s+\S+\s+LISTENING\s+$($instance.Process.Id)\s*$"
+        $portPattern = "^\s*TCP\s+${bindIpPattern}:$($instance.Port)\s+\S+\s+LISTENING\s+$($instance.Process.Id)\s*$"
         $listener = netstat -ano -p tcp | Select-String -Pattern $portPattern
         if ($listener) {
             $ready = $true

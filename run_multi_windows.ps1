@@ -1,6 +1,7 @@
 param(
     [ValidateCount(1, 4)]
     [int[]]$Ports = @(9001, 9002),
+    [string[]]$Endpoints = @(),
     [ValidateRange(1, 8)]
     [int]$FrameStack = 4,
     [ValidateRange(5, 30)]
@@ -42,8 +43,14 @@ if (($Ports | Sort-Object -Unique).Count -ne $Ports.Count) {
     throw "Ports must be unique."
 }
 
-$arguments = @("main_multi.py", "--ports")
-$arguments += @($Ports | ForEach-Object { "$_" })
+if ($Endpoints.Count -gt 0) {
+    $arguments = @("main_multi.py", "--endpoints")
+    $arguments += @($Endpoints)
+}
+else {
+    $arguments = @("main_multi.py", "--ports")
+    $arguments += @($Ports | ForEach-Object { "$_" })
+}
 $arguments += @(
     "--frame-stack", "$FrameStack",
     "--control-hz", "$ControlHz",
@@ -86,7 +93,12 @@ Push-Location $trainerDir
 try {
     $env:HOLLOWRL_DEATH_SETTLE_WAIT = "$DeathSettleWait"
     $env:HOLLOWRL_POST_LEFT_WAIT = "$PostLeftWait"
-    Write-Host "Central PPO trainer: ports=$($Ports -join ',')"
+    if ($Endpoints.Count -gt 0) {
+        Write-Host "Central PPO trainer: endpoints=$($Endpoints -join ',')"
+    }
+    else {
+        Write-Host "Central PPO trainer: ports=$($Ports -join ',')"
+    }
     & $pythonExe -u @arguments
     exit $LASTEXITCODE
 }

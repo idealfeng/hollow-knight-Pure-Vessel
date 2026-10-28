@@ -1,6 +1,7 @@
 """Summarize live PPO progress from a run's training_metrics.jsonl file."""
 
 import argparse
+from collections import defaultdict
 import json
 from pathlib import Path
 from statistics import mean, median
@@ -52,8 +53,37 @@ def main():
             f"latest update {latest['update']}: "
             f"explained_variance={latest['explained_variance']:+.2f}, "
             f"approx_kl={latest['approx_kl']:.4f}, "
-            f"step/s={latest['n_samples'] / max(latest['elapsed_seconds'], 1e-6):.1f}"
+            f"training_step/s={latest['n_samples'] / max(latest['elapsed_seconds'], 1e-6):.1f}"
         )
+        evaluation_seconds = sum(row["elapsed_seconds"] for row in rows
+                                 if row.get("event") == "eval_summary")
+        total_seconds = sum(row["elapsed_seconds"] for row in updates) + evaluation_seconds
+        samples = sum(row["n_samples"] for row in updates)
+        print(f"logged samples={samples}, logged update/eval time={total_seconds / 60:.1f}min, "
+              f"known eval time={evaluation_seconds:.1f}s")
+
+    by_env = defaultdict(list)
+    for episode in episodes[-args.window:]:
+        by_env[episode.get("env", 0)].append(episode)
+    for index, fights in sorted(by_env.items()):
+        print(f"env {index}: n={len(fights)}, hits={mean(e['hits'] for e in fights):.2f}, "
+              f"reset={median(e['reset_seconds'] for e in fights):.1f}s")
+
+    evaluation_path = args.run_dir / "eval_metrics.jsonl"
+    if evaluation_path.exists():
+        evaluations = load_metrics(evaluation_path)
+        if evaluations:
+            last_update = evaluations[-1]["update"]
+            latest_eval = [row for row in evaluations if row["update"] == last_update]
+            print(f"greedy eval update {last_update}: n={len(latest_eval)}, "
+                  f"wins={sum(bool(e['won']) for e in latest_eval)}, "
+                  f"hits={mean(e['hits'] for e in latest_eval):.2f}, "
+                  f"boss_min_hp={mean(e['min_boss_health'] for e in latest_eval):.1f}")
+    best_path = args.run_dir / "best_eval.json"
+    if best_path.exists():
+        best = json.loads(best_path.read_text(encoding="utf-8"))
+        print(f"best evaluated checkpoint: update {best['update']}, "
+              f"win_rate={best['win_rate']:.0%}, hits={best['mean_hits']:.2f}")
 
 
 if __name__ == "__main__":

@@ -97,6 +97,21 @@ class HollowKnightEnv(gym.Env):
 
     def _read(self, steps=None, retries=40, delay=0.02):
         for _ in range(retries):
+            death = game_state.episode_death_frame
+            if death is not None and self.state is not None:
+                # Keep the final counters/HP even if Unity has already removed
+                # the hero collider or restored HP during the return to Godhome.
+                state = dict(self.state)
+                state.update(
+                    knight_health=0,
+                    boss_health=(death.boss_health if death.boss_health >= 0
+                                 else self.state["boss_health"]),
+                    hit_count=death.hit_count - game_state.hit_count_baseline,
+                    damage_count=death.damage_count - game_state.damage_count_baseline,
+                    attacking=False, attack_box=None,
+                )
+                vector = state_to_vector(state, self._time_fraction(steps))
+                return state, np.asarray(vector, dtype=np.float32)
             state = get_state()
             try:
                 vector = state_to_vector(state, self._time_fraction(steps))
@@ -179,7 +194,7 @@ class HollowKnightEnv(gym.Env):
             self.last_reset_attempts = int(reset_details["attempts"])
             self.total_reset_retries += max(self.last_reset_attempts - 1, 0)
             if not reset_details["ok"]:
-                raise RuntimeError("could not reset boss fight")
+                raise RuntimeError(f"could not reset boss fight: {reset_details}")
         else:
             self.last_reset_attempts = 0
             # Reusing a fight on worker startup skips reset_environment(),
@@ -246,9 +261,15 @@ class HollowKnightEnv(gym.Env):
             current, raw = previous, self.raw_observation
 
         won = current["boss_health"] == 0
+        fight_lost = (not disconnected and not won
+                      and previous.get("boss_health", -1) > 0
+                      and current.get("boss_health", -1) < 0)
         terminated = bool(won or (current["knight_health"] <= 0 and not timed_out))
-        truncated = bool((timed_out and not won) or disconnected)
+        truncated = bool((timed_out and not won) or disconnected or fight_lost)
         done_for_reward = terminated or truncated
+        if done_for_reward:
+            controls.release_all()
+            self.prev_buttons = None
 
         reward = self.reward_tracker.transition(
             previous,
@@ -265,7 +286,8 @@ class HollowKnightEnv(gym.Env):
             self.min_boss_hp = min(self.min_boss_hp, current["boss_health"])
 
         stacked = self.stacker.append(raw)
-        reason = "timeout" if timed_out else ("disconnect" if disconnected else None)
+        reason = ("timeout" if timed_out else "disconnect" if disconnected
+                  else "fight_lost" if fight_lost else None)
         info = self._info(won, reason)
         info["action_wall_seconds"] = action_seconds
         info["step_wall_seconds"] = time.perf_counter() - step_started
