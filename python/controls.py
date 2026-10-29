@@ -38,8 +38,8 @@ def _connect():
     return sock
 
 
-def _send(command):
-    """Send one command and wait for the mod's acknowledgement.
+def request(command, retry=True):
+    """Send one command and read its complete newline-delimited reply.
 
     Synchronous on purpose: the reply is one round trip on loopback (well
     under a millisecond) and it keeps the socket in lockstep, so a dropped
@@ -50,24 +50,41 @@ def _send(command):
     global _sock, _warned
 
     with _lock:
-        for attempt in (1, 2):
+        attempts = (1, 2) if retry else (1,)
+        for attempt in attempts:
             try:
                 sock = _sock or _connect()
                 sock.sendall(command.encode() + b"\n")
-                if not sock.recv(64):
-                    raise ConnectionError("mod closed the connection")
+                reply = bytearray()
+                while not reply.endswith(b"\n"):
+                    block = sock.recv(1)
+                    if not block:
+                        raise ConnectionError("mod closed the connection")
+                    reply.extend(block)
+                    if len(reply) > 4096:
+                        raise ConnectionError("mod command reply exceeds 4096 bytes")
                 _warned = False
-                return True
+                return reply.decode("utf-8").strip()
             except (ConnectionError, OSError):
                 if _sock is not None:
                     _sock.close()
                     _sock = None
-                if attempt == 2 and not _warned:
+                if attempt == attempts[-1] and not _warned:
                     # Once per outage, not once per dropped keystroke at 15 Hz.
                     print("controls: no input channel to the game "
                           "(is it running with the HollowRL mod?)")
                     _warned = True
+        return None
+
+
+def _send(command):
+    reply = request(command)
+    if reply is None:
         return False
+    if not reply.startswith("ok"):
+        print(f"controls: {command.split()[0]} rejected: {reply}")
+        return False
+    return True
 
 
 def _check(action):

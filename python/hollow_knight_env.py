@@ -14,9 +14,11 @@ import numpy as np
 
 import controls
 import game_state
+import fight_reset
 from agent.action import NUM_BUTTONS, execute_buttons
 from agent.reward import RewardTracker
 from enviroment import OBSERVATION_SIZE, get_state, is_done, reset_environment, state_to_vector
+from enviroment.reset import state_is_combat_ready
 
 DEFAULT_CONTROL_HZ = 10
 DEFAULT_FRAME_STACK = 4
@@ -90,6 +92,9 @@ class HollowKnightEnv(gym.Env):
         self.total_reset_seconds = 0.0
         self.total_reset_retries = 0
         self.reset_count = 0
+        self.last_reset_mode = "reuse"
+        self._fast_reset_checked = False
+        self._fast_reset_supported = False
 
     def _time_fraction(self, steps=None):
         steps = self.episode_steps if steps is None else steps
@@ -157,6 +162,7 @@ class HollowKnightEnv(gym.Env):
             "total_reset_seconds": self.total_reset_seconds,
             "total_reset_retries": self.total_reset_retries,
             "reset_count": self.reset_count,
+            "reset_mode": self.last_reset_mode,
         }
 
     def reset(self, *, seed=None, options=None):
@@ -171,6 +177,9 @@ class HollowKnightEnv(gym.Env):
             delay=0.05 if first_reset else 0.02,
         )
         reuse = options.get("reuse_live_fight", self.reuse_live_fight)
+        if not self._fast_reset_checked:
+            self._fast_reset_supported = fight_reset.enable()
+            self._fast_reset_checked = True
 
         if (options.get("require_live_on_first_reset", False)
                 and not self._has_reset_once and not self._live(current)):
@@ -182,21 +191,38 @@ class HollowKnightEnv(gym.Env):
                 "starting training."
             )
 
-        if self._live(current) and (self._has_reset_once or not reuse):
+        fast_details = None
+        if self._fast_reset_supported and (self._has_reset_once or not reuse):
+            fast_details = fight_reset.reset(state_is_combat_ready)
+            if fast_details is not None and not fast_details["ok"]:
+                print(f"scene reset failed; falling back to statue navigation: {fast_details}")
+                fight_reset.disable()
+                self._fast_reset_supported = False
+                # We are already resetting. Inspect the live stream rather
+                # than the previous episode's deliberately latched death.
+                current = get_state()
+
+        if fast_details is not None and fast_details["ok"]:
+            self.last_reset_attempts = 1
+            self.last_reset_mode = "scene"
+            game_state.reset_episode_counters()
+        elif self._live(current) and (self._has_reset_once or not reuse):
             controls.kill()
             end = time.perf_counter() + 5.0
             while time.perf_counter() < end and game_state.knight_health > 0:
                 time.sleep(0.05)
             current = None
 
-        if not self._live(current):
+        if not (fast_details is not None and fast_details["ok"]) and not self._live(current):
             reset_details = reset_environment(current, return_details=True)
             self.last_reset_attempts = int(reset_details["attempts"])
             self.total_reset_retries += max(self.last_reset_attempts - 1, 0)
             if not reset_details["ok"]:
                 raise RuntimeError(f"could not reset boss fight: {reset_details}")
-        else:
+            self.last_reset_mode = "menu"
+        elif not (fast_details is not None and fast_details["ok"]):
             self.last_reset_attempts = 0
+            self.last_reset_mode = "reuse"
             # Reusing a fight on worker startup skips reset_environment(),
             # which normally establishes the per-episode counter baselines.
             # Without this, the first episode reports lifetime hits/damage
@@ -294,5 +320,7 @@ class HollowKnightEnv(gym.Env):
         return stacked, reward, terminated, truncated, info
 
     def close(self):
+        if self._fast_reset_supported:
+            fight_reset.disable()
         controls.release_all()
         controls.close()

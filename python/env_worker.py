@@ -76,7 +76,7 @@ def env_worker_main(connection, host, port, control_hz, frame_stack,
                 break
             try:
                 if op == "reset":
-                    if env._has_reset_once:
+                    if env._has_reset_once and not env._fast_reset_supported:
                         # A terminal transition may have been frozen at the
                         # previous rollout boundary. Let its animation/menu
                         # progress at 1x, then restore training speed after

@@ -525,6 +525,7 @@ def main():
         "target_kl": TARGET_KL, "epochs": EPOCHS,
         "minibatch_size": MINIBATCH_SIZE, "reward_scale": REWARD_SCALE,
         "started_at_unix": time.time(),
+        "fast_reset": os.environ.get("HOLLOWRL_FAST_RESET", "auto"),
     }
     with open(os.path.join(run_dir, "run_config.json"), "w", encoding="utf-8") as stream:
         json.dump(run_config, stream, indent=2)
@@ -576,7 +577,7 @@ def main():
             )
         finally:
             model.train()
-        valid = all(result["info"].get("truncated_reason") != "disconnect"
+        valid = all(result["info"].get("truncated_reason") not in ("disconnect", "fight_lost")
                     and result["info"].get("min_boss_health") is not None
                     for result in results)
         summary = {
@@ -727,10 +728,11 @@ def main():
                             attempts = int(reset_info.get("reset_attempts", 0))
                             update_reset_seconds += seconds
                             update_reset_retries += max(attempts - 1, 0)
-                            if attempts > 1 or seconds > 12.0:
+                            mode = reset_info.get("reset_mode", "menu")
+                            if mode == "scene" or attempts > 1 or seconds > 12.0:
                                 print(
                                     f"reset {hosts[env_index]}:{ports[env_index]}: "
-                                    f"{seconds:.1f}s, {attempts} menu attempts"
+                                    f"{seconds:.1f}s, mode={mode}, {attempts} attempts"
                                 )
                             if counts[env_index] < steps_per_env:
                                 pool.send(env_index, "start")

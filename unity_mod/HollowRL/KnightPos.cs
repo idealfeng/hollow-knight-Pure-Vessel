@@ -390,6 +390,15 @@ namespace KnightPos
         // the knight can actually die.
         private void Update()
         {
+            // A trainer must observe real damage even if F8 was enabled
+            // before it connected. Clear the toggle so it cannot resume
+            // healing the hero when that trainer later disconnects.
+            if (HollowRL.FastResetActive)
+            {
+                LockKnightHealth = false;
+                return;
+            }
+
             if (Input.GetKeyDown(KeyCode.F8))
                 LockKnightHealth = !LockKnightHealth;
 

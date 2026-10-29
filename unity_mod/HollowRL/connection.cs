@@ -165,7 +165,9 @@ public partial class HollowRL : BaseUnityPlugin
 
     private void Awake()
     {
+        resetPlugin = this;
         Harmony.CreateAndPatchAll(typeof(HollowRL));
+        Harmony.CreateAndPatchAll(typeof(TrainingDeathPatch), "com.AbdulAzizOM.HollowRL.reset");
 
         // Multiple windowed instances must keep simulating while another one
         // has focus.  An optional frame cap saves a large amount of rendering
@@ -208,6 +210,7 @@ public partial class HollowRL : BaseUnityPlugin
 
     private void Update()
     {
+        FightResetTick();
         // Input injection has to be wired up before anything reads input this
         // frame. InputHandler does not exist until a save is loaded, so this
         // keeps retrying until it resolves and then costs one bool check.
@@ -334,6 +337,7 @@ public partial class HollowRL : BaseUnityPlugin
         string controlState = ReadControlFsmState(boss);
         int kHealth = knightPos.GetKnightHealth();
         int manaAmount = knightPos.GetMana();
+        CaptureFightReset(boss, kHealth, manaAmount);
 
         int health;
         bool victoryDetectedThisFrame = false;
@@ -842,6 +846,13 @@ public partial class HollowRL : BaseUnityPlugin
                 if (HandleDemonstrationCommand(client, command, writer))
                     continue;
 
+                string resetReply = HandleFightResetCommand(client, command);
+                if (resetReply != null)
+                {
+                    writer.WriteLine(resetReply);
+                    continue;
+                }
+
                 // Anything that is not a state request is an input command.
                 if (!command.StartsWith("pos"))
                 {
@@ -861,6 +872,7 @@ public partial class HollowRL : BaseUnityPlugin
         }
         finally
         {
+            ReleaseFightResetOwner(client);
             StopDemonstrationOnDisconnect(client);
             // A trainer that crashes mid-episode must not leave the knight
             // holding `left` for the rest of the session.
@@ -1114,6 +1126,7 @@ public partial class HollowRL : BaseUnityPlugin
 
     private void OnDestroy()
     {
+        if (resetPlugin == this) resetPlugin = null;
         serverRunning = false;
         CloseDiagnosticRecording();
 
