@@ -37,6 +37,28 @@ class ActorCritic(nn.Module):
             _orthogonal(nn.Linear(hidden, n), 0.01) for n in action_sizes
         ])
         self.critic = _orthogonal(nn.Linear(hidden, 1), 1.0)
+
+    def configure_trainable_parameters(self, mode="all"):
+        """Select parameter updates without changing action sampling or scoring.
+
+        Frozen heads need a frozen trunk as well: otherwise their logits would
+        change even though their own weights did not. Keeping every parameter
+        in Adam's original groups permits loading a full-policy optimizer;
+        frozen parameters have no gradient and Adam skips them, including any
+        previously accumulated moments.
+        """
+        if mode not in ("all", "dash_only"):
+            raise ValueError(f"unknown training mode: {mode!r}")
+        if mode == "dash_only" and (not self.bernoulli or len(self.heads) != 7):
+            raise ValueError("dash_only requires the seven-button Bernoulli policy")
+        names = []
+        for name, parameter in self.named_parameters():
+            trainable = mode == "all" or name.startswith(("heads.6.", "critic."))
+            parameter.requires_grad_(trainable)
+            parameter.grad = None
+            if trainable:
+                names.append(name)
+        return names
  
     def forward(self, obs):
         h = self.trunk(obs)

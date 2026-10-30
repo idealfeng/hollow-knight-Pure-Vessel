@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 import json
 import math
 import multiprocessing as mp
@@ -18,6 +19,7 @@ import torch
 import torch.optim as optim
 
 from agent.action import BUTTON_ORDER, NUM_BUTTONS, is_intro_state
+from agent.reward import get_reward_config
 from endpoints import resolve_endpoints
 from evaluation import evaluate_pool, interrupt_episode_stats
 from env_worker import env_worker_main
@@ -25,6 +27,7 @@ from monitor import TrainingMonitor
 from obs_norm import RunningNorm
 from ppo_model import ActorCritic
 from ppo_training import ppo_update
+from policy_selection import is_flawless, nohit_selection_score
 from rollout_buffer import VectorRolloutBuffer
 
 
@@ -52,7 +55,8 @@ class ExternalEnvPool:
     """Small IPC pool whose children each own one socket-backed environment."""
 
     def __init__(self, endpoints, control_hz, frame_stack, episode_time_limit,
-                 game_speed):
+                 game_speed, reward_profile="victory_v1", boss_level=None,
+                 observation_time_limit=None):
         context = mp.get_context("spawn")
         self.endpoints = [(str(host), int(port)) for host, port in endpoints]
         self.ports = tuple(port for _, port in self.endpoints)
@@ -66,7 +70,8 @@ class ExternalEnvPool:
             process = context.Process(
                 target=env_worker_main,
                 args=(child, host, port, control_hz, frame_stack,
-                      episode_time_limit, game_speed),
+                      episode_time_limit, game_speed, reward_profile, boss_level,
+                      observation_time_limit),
                 name=f"HollowRL-env-{host}-{port}",
                 daemon=True,
             )
@@ -306,6 +311,8 @@ def parse_args():
     parser.add_argument("--control-hz", type=int, default=10)
     parser.add_argument("--frame-stack", type=int, default=4)
     parser.add_argument("--episode-time-limit", type=float, default=60.0)
+    parser.add_argument("--observation-time-limit", type=float, default=None,
+                        help="elapsed-time observation scale in seconds; defaults to the episode limit")
     parser.add_argument("--game-speed", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--torch-threads", type=int, default=2)
@@ -319,8 +326,16 @@ def parse_args():
                         help=f"Adam learning rate (default {LR:g})")
     parser.add_argument("--ent-coef", type=float, default=ENT_COEF,
                         help=f"entropy bonus coefficient (default {ENT_COEF:g})")
+    parser.add_argument("--train-mode", choices=("all", "dash_only"), default=None,
+                        help="parameter update scope; existing runs inherit their saved mode")
     parser.add_argument("--eval-every", type=int, default=0,
                         help="run fixed greedy evaluation every N updates; 0 disables")
+    parser.add_argument("--reward-profile", choices=("victory_v1", "nohit_v1", "radiant_spacing_v1", "radiant_wave_clear_v1"), default=None,
+                        help="new-run reward profile; existing runs inherit their saved profile")
+    parser.add_argument("--eval-objective", choices=("victory", "nohit"), default=None,
+                        help="new-run selection objective; existing runs inherit their saved objective")
+    parser.add_argument("--boss-level", type=int, choices=(0, 1, 2), default=None,
+                        help="0 Attuned, 1 Ascended, 2 Radiant; requires verified tier-switch mod")
     parser.add_argument("--eval-episodes", type=int, default=1,
                         help="greedy episodes per environment during each evaluation")
     parser.add_argument("--freeze-obs-norm", action="store_true",
@@ -337,6 +352,11 @@ def parse_args():
         parser.error("ports must be in 1024..65535")
     if args.control_hz <= 0 or args.frame_stack <= 0:
         parser.error("control-hz and frame-stack must be positive")
+    if not math.isfinite(args.episode_time_limit) or args.episode_time_limit <= 0:
+        parser.error("episode-time-limit must be finite and positive")
+    if args.observation_time_limit is not None and (
+            not math.isfinite(args.observation_time_limit) or args.observation_time_limit <= 0):
+        parser.error("observation-time-limit must be finite and positive")
     if not 0.5 <= args.game_speed <= 4.0:
         parser.error("game-speed must be in 0.5..4.0")
     if args.steps_per_env < 0:
@@ -379,6 +399,22 @@ def main():
     metrics_path = os.path.join(run_dir, "training_metrics.jsonl")
     eval_metrics_path = os.path.join(run_dir, "eval_metrics.jsonl")
     best_eval_path = os.path.join(run_dir, "best_eval.json")
+    previous_config = {}
+    if os.path.isfile(checkpoint_path):
+        config_path = os.path.join(run_dir, "run_config.json")
+        if os.path.isfile(config_path):
+            with open(config_path, encoding="utf-8-sig") as stream:
+                previous_config = json.load(stream)
+        else:
+            previous_config = torch.load(checkpoint_path, map_location="cpu", weights_only=False).get("training_config", {})
+    for field, default in (("reward_profile", "victory_v1"), ("eval_objective", "victory"),
+                           ("boss_level", None), ("observation_time_limit", None),
+                           ("train_mode", "all")):
+        requested = getattr(args, field)
+        saved_value = previous_config.get(field, default)
+        if os.path.isfile(checkpoint_path) and requested is not None and requested != saved_value:
+            raise SystemExit(f"Cannot change {field} inside an existing run; fork with --init-checkpoint and a new --run-dir")
+        setattr(args, field, requested if requested is not None else saved_value)
 
     print(
         f"starting {num_envs} environments on "
@@ -391,7 +427,8 @@ def main():
 
     pool = ExternalEnvPool(
         endpoints, args.control_hz, args.frame_stack,
-        args.episode_time_limit, args.game_speed
+        args.episode_time_limit, args.game_speed, args.reward_profile, args.boss_level,
+        args.observation_time_limit,
     )
 
     # Reset concurrently.  Waiting for replies in index order does not make
@@ -473,6 +510,14 @@ def main():
         episode = int(checkpoint["episode"])
         print(f"resumed at update {start_update}, step {global_step}")
 
+    # Configure only after restoring the complete optimizer and model. Adam's
+    # parameter groups retain the checkpoint layout; frozen gradients remain
+    # None, so old optimizer moments cannot move the preserved parameters.
+    trainable_parameter_names = model.configure_trainable_parameters(args.train_mode)
+    trainable_action_heads = [6] if args.train_mode == "dash_only" else list(range(NUM_BUTTONS))
+    print(f"training mode: {args.train_mode}; trainable parameters: "
+          f"{', '.join(trainable_parameter_names)}", flush=True)
+
     # The saved optimizer may hold a different learning rate (the BC checkpoint
     # stores the module default). Honour --lr explicitly for this run.
     for group in optimizer.param_groups:
@@ -502,7 +547,7 @@ def main():
             reason = str(exc).splitlines()[0]
             print(f"monitor unavailable ({reason}); continuing in terminal mode", flush=True)
     if monitor is not None:
-        monitor.set_run_info(resumed, start_update=start_update, start_episode=episode)
+        monitor.set_run_info(init_source is not None, start_update=start_update, start_episode=episode)
 
     episode_rewards = [0.0] * num_envs
     episode_steps = [0] * num_envs
@@ -526,6 +571,10 @@ def main():
         "minibatch_size": MINIBATCH_SIZE, "reward_scale": REWARD_SCALE,
         "started_at_unix": time.time(),
         "fast_reset": os.environ.get("HOLLOWRL_FAST_RESET", "auto"),
+        "reward_config": asdict(get_reward_config(args.reward_profile)),
+        "trainable_parameter_names": trainable_parameter_names,
+        "trainable_action_heads": trainable_action_heads,
+        "action_sampling": "original_all_heads_stochastic",
     }
     with open(os.path.join(run_dir, "run_config.json"), "w", encoding="utf-8") as stream:
         json.dump(run_config, stream, indent=2)
@@ -561,7 +610,7 @@ def main():
                 "reward": result["reward"], "steps": result["steps"],
                 **{key: info.get(key) for key in (
                     "hits", "damage", "misses", "staggers", "min_boss_health",
-                    "won", "truncated_reason")},
+                    "won", "truncated_reason", "damage_events", "episode_damage", "damage_tracking_valid")},
             }
             with open(eval_metrics_path, "a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, default=float) + "\n")
@@ -587,10 +636,15 @@ def main():
             "win_rate": float(np.mean([r["info"].get("won", False) for r in results])),
             "mean_hits": float(np.mean([r["info"]["hits"] for r in results])),
             "mean_reward": float(np.mean([r["reward"] for r in results])),
+            "mean_damage": float(np.mean([r["info"]["damage"] for r in results])),
+            "nohit_wins": sum(is_flawless(r["info"]) for r in results),
+            "nohit_rate": float(np.mean([is_flawless(r["info"]) for r in results])),
+            "selection_objective": args.eval_objective,
             "mean_min_boss_hp": float(np.mean([
                 r["info"].get("min_boss_health") or 0 for r in results])),
         }
-        score = (summary["win_rate"], -summary["mean_min_boss_hp"], summary["mean_reward"])
+        score = (nohit_selection_score(summary) if args.eval_objective == "nohit" else
+                 (summary["win_rate"], -summary["mean_min_boss_hp"], summary["mean_reward"]))
         summary["selection_score"] = list(score)
         improved = valid and (best_eval_score is None or score > best_eval_score)
         summary["new_best"] = improved

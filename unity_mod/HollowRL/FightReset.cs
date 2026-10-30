@@ -21,6 +21,7 @@ public partial class HollowRL
     private string resetScene;
     private string resetEntryGate;
     private int resetBossLevel;
+    private int observedBossLevel = -1;
     private int resetHealth;
     private int resetBlueHealth;
     private int resetSoul;
@@ -37,6 +38,7 @@ public partial class HollowRL
             return;
         lock (resetGate)
         {
+            observedBossLevel = BossSceneController.Instance.BossLevel;
             if (resetScene != null) return;
             resetScene = boss.gameObject.scene.name;
             resetEntryGate = GameManager.instance.entryGateName;
@@ -69,6 +71,8 @@ public partial class HollowRL
                 resetVisualRequested = true;
                 return "visual_v1;" + resetVisual;
             }
+            if (operation == "TARGET")
+                return "target_v1;" + (resetScene ?? "") + ";" + resetBossLevel + ";" + observedBossLevel;
             if (DemonstrationActive) return "err human demonstration active";
             if (operation == "ENABLE")
             {
@@ -86,6 +90,17 @@ public partial class HollowRL
                 fastResetEnabled = false;
                 resetDisablePending = true;
                 return "ok reset_v1 disabled";
+            }
+            if (operation == "LEVEL")
+            {
+                int level;
+                if (words.Length != 3 || !int.TryParse(words[2], out level) || level < 0 || level > 2)
+                    return "err level must be 0 (Attuned), 1 (Ascended), or 2 (Radiant)";
+                if (!fastResetEnabled || resetOwner != client) return "err fast reset is not enabled";
+                if (resetScene == null) return "err reset target not captured";
+                if (resetPending || resetRunning) return "err reset is busy";
+                resetBossLevel = level;
+                return "ok reset_v1 level " + level;
             }
             if (operation != "START") return "err unknown reset operation";
             if (!fastResetEnabled || resetOwner != client) return "err fast reset is not enabled";
