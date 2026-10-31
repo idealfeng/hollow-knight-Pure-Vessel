@@ -100,7 +100,7 @@ class TrainingMonitor:
 
         self._load_history()
         self._last_save_time = 0.0
-        # add_reward()/add_update() run on the TRAINING thread (main.py calls
+        # add_reward()/add_update() run on the TRAINING thread (main_multi.py calls
         # them directly inside train_loop()), and previously called
         # _save_history() - a full np.savez of every array - on EVERY single
         # one of those calls. Measured cost grows with total history: 3.4 ms
@@ -188,7 +188,7 @@ class TrainingMonitor:
         )
 
     def set_run_info(self, resumed, start_update=0, start_episode=0):
-        """Called once from main.py right after it knows whether it loaded a
+        """Called once from main_multi.py right after it knows whether it loaded a
         checkpoint. Previously this only ever went to a print() - visible in
         a terminal you may not be looking at, not in the monitor window
         itself, which is the thing actually on screen during a run."""

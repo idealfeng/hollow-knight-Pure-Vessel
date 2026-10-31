@@ -1,174 +1,43 @@
-# Windows 多环境训练
+﻿# Windows 本机多窗口训练
 
-当前实现是真正的中央 PPO：每个游戏实例由一个独立 Python worker 控制，
-所有 worker 把样本交给同一个模型更新。不要手动启动多个 `main.py`，那只会产生
-互不共享数据的模型，并争用同一个 checkpoint。
+一个中央 PPO 为所有游戏收集数据并更新同一模型，各游戏由独立 worker 控制。启动多个训练器不能代替多环境采样，并会争用游戏。
 
-```text
-Hollow Knight :9001 -> worker 0 --+
-                                  +-> central PPO -> one checkpoint
-Hollow Knight :9002 -> worker 1 --+
-```
+## 游戏目录
 
-## 1. 准备两个游戏目录
-
-先完整退出 Steam 和游戏，备份：
-
-```text
-%USERPROFILE%\AppData\LocalLow\Team Cherry\Hollow Knight
-```
-
-将已经安装 BepInEx 和 HollowRL Mod 的游戏目录复制为两个训练目录，例如：
-
-```text
-D:\HollowRL-instances\env1
-D:\HollowRL-instances\env2
-```
-
-每个目录都必须存在：
-
-```text
-hollow_knight.exe
-BepInEx\plugins\HollowRL\HollowRL.dll
-```
-
-启动脚本会在每个游戏目录放入 `steam_appid.txt`（内容为 Hollow Knight 的
-Steam App ID `367520`），用于从复制目录直接启动。没有这个文件时，副本可能
-在日志中报告 `Application was not launched through Steam! Shutting down...`，
-随后退出或被 Steam 重启到原安装目录。脚本现在会检查游戏进程仍在运行，且指定
-端口确实由该进程监听，然后才输出 `Ready`。
-
-独立目录隔离 BepInEx 日志和配置，但 Hollow Knight 的存档目录仍由同一 Windows
-账户共享。因此必须使用专门的训练存档、事先备份，并关闭 Steam Cloud。不要用
-正式游玩存档做多实例实验。
-
-本机已经准备为：
-
-```text
-环境 1: D:\Program Files\Steam\steamapps\common\Hollow Knight
-环境 2: D:\HollowRL-instances\env2
-存档备份: D:\Paper\hollow knight\save_backup_before_multienv_20261026
-```
-
-编译后的最新 Mod 位于：
-
-```text
-unity_mod\HollowRL\bin\Release\HollowRL.dll
-```
-
-复制它覆盖到两个实例各自的 `BepInEx\plugins\HollowRL\HollowRL.dll`。
-
-## 2. 启动游戏实例
-
-仓库根目录执行：
+准备两份已安装 BepInEx 和当前 Mod 的游戏目录，各自包含 `hollow_knight.exe` 与 `BepInEx/plugins/HollowRL/HollowRL.dll`。游戏目录隔离日志和配置，同一 Windows 账户的存档目录仍共享。先备份存档，使用训练模板并关闭 Steam Cloud。启动器提供 `steam_appid.txt`，检查游戏进程和监听端口。
 
 ```powershell
 .\launch_multi_games.ps1 `
-  -GameDirs "D:\HollowRL-instances\env1","D:\HollowRL-instances\env2" `
+  -GameDirs 'D:\HollowRL-instances\env1','D:\HollowRL-instances\env2' `
   -Ports 9001,9002
 ```
 
-这台机器也可以直接使用已经填好路径的快捷脚本：
+默认 640×360、30 FPS、1 倍速，后台继续运行。可用 `-Fps 60 -Width 1280 -Height 720` 调整显示。各窗口加载 1 号存档，站到叛徒领主雕像前；训练器自动进战并等待可战斗状态。
+
+## 中央训练
 
 ```powershell
-.\launch_two_local_games.ps1
+.\run_multi_windows.ps1 -Ports 9001,9002 `
+  -RunDir python\runs\traitor_local -Lr 1e-4 -EntCoef 0.005 `
+  -EvalEvery 25 -EvalEpisodes 10
 ```
 
-脚本默认给每个实例设置：
+此命令使用默认难度和奖励；显式辐辉使用 [README](README.md) 的 `main_multi.py` 命令。`-NoMonitor` 可禁用嵌入式 GUI，`-StepsPerEnv` 调整每环境采样长度。默认双环境各 1024 步、四环境各 512 步，合计每次更新 2048 步。
 
-- 独立 TCP 端口；
-- 640x360 窗口；
-- 30 FPS 上限；
-- 1 倍游戏速度；
-- 后台继续运行（由 Mod 设置 `Application.runInBackground`）。
+同一运行目录自动恢复最新完整 checkpoint；新实验使用新目录。推理专用权重不包含完整续训的优化器状态。
 
-新启动的游戏窗口会正常显示，方便分别加载训练存档；重复运行脚本会识别已
-监听对应端口的实例，不会再额外启动同一路径的游戏。
+## 日志与性能
 
-两个窗口都需要加载训练存档并站到 叛徒领主雕像前。训练器启动时会对两边
-同时执行 `up`、`submit`，检查 Boss 确实出现，再暂时冻结游戏时间以完成
-模型初始化；开始采样时恢复指定的训练速度。此自动进入仅适用于随仓库提供的
-叛徒领主训练存档和已知雕像坐标。若位置不符，训练器会明确报出端口和坐标。
-
-## 3. 启动中央训练器
+- `training_metrics.jsonl`：完整训练回合、更新和评估汇总。
+- `eval_metrics.jsonl`：固定贪心策略逐局评估。
+- `ppo_checkpoint.pth`：最近的完整训练状态。
+- `best_eval_checkpoint.pth`、`best_eval.json`：评估选出的模型及成绩。
+- `run_config.json`：实际参数。
 
 ```powershell
-.\run_multi_windows.ps1 -Ports 9001,9002
+.\python\.venv\Scripts\python.exe python\watch_training.py --run-dir python\runs\traitor_local
 ```
 
-如果监控窗口因本机 Tcl/Tk 配置无法打开，训练器会自动改用终端日志继续运行。也可以明确禁用图形监控，并限制本次更新次数：
+先观察总 step/s、内存、各窗口 FPS、重置耗时与重试数，再增加实例。某窗口重置时其他 worker 可继续采样，但所有游戏仍共享硬件资源。重置重试持续增加时先处理故障。
 
-```powershell
-.\run_multi_windows.ps1 -Ports 9001,9002 -NoMonitor -TotalUpdates 100
-```
-
-每次 PPO 更新后会原子保存检查点；再次使用同一 `-RunDir` 会从该检查点继续。
-
-默认两个环境各收集 1024 步，每次 PPO 更新仍是 2048 个 transition。checkpoint
-和曲线写入独立目录：
-
-```text
-python\runs\body_center_v3_9001_9002\
-```
-
-旧实验 `python\runs\multi_9001_9002\` 保留，仅供对照：当时每局约 13 游戏秒的 Boss
-开场动画被算作训练步数，而且碰撞盒常缺失。新实验会等到 Boss 的 Mantis FSM 离开
-`Intro` 且真实身体碰撞盒出现后才开始采样；Mod 不再把技能探测范围的 trigger 当作身体框。
-传送期间身体框可能暂时缺失，此时距离奖励跳过该帧。新目录也不会覆盖单环境的
-`python\ppo_checkpoint.pth`。
-
-`python\runs\combat_ready_bodybox_9001_9002\` 也保留：它已经跳过开场并读到身体框，
-但策略的相对 Boss 坐标仍来自根节点。v2 改为使用身体框中心，传送期间才回退到根节点；
-观测含义改变，因此单独开始新 checkpoint。
-
-三个环境可用：
-
-```powershell
-.\run_multi_windows.ps1 -Ports 9001,9002,9003 -StepsPerEnv 768
-```
-
-当前这台 16 GB 机器双开后实测仅剩约 1.5 GB 可用内存，两份游戏的工作集共约
-2.4 GB；显存使用约 2.7/8.2 GB。因此当前建议最多 **2 个游戏实例**，不要在
-这个内存占用水平下再开第 3 个。只有先关闭其他高内存应用、留出至少约 4 GB
-可用内存，再逐步测试 3 个实例的稳定性与总吞吐。
-
-## 4. 如何判断是否值得多开
-
-更新日志会输出：
-
-```text
-step/s | reset 31.2s/2 retries
-```
-
-先分别记录单环境和双环境至少 30 分钟：
-
-- 双环境总 `step/s` 应达到单环境的约 1.7 倍以上；
-- 总内存建议持续低于 13--14 GB；
-- 不应持续使用页面文件；
-- 每个窗口应保持至少 30 FPS；
-- reset retries 不应持续增加；
-- 两个端口都应不断产生 episode。
-
-若重置重试很多，优先修正菜单时序，不要继续增加环境数。异步 worker 会让另一个
-环境在某个实例重置期间继续采样，但无法消除重置本身浪费的机器时间。
-
-确认机器上死亡动画更早结束后，可以小步测试重置等待时间，例如：
-
-```powershell
-.\run_multi_windows.ps1 -Ports 9001,9002 -DeathSettleWait 6 -PostLeftWait 1.5
-```
-
-一次只减少 0.5 秒，并观察 `reset retries`；重试增加就恢复默认值。默认值仍为
-7 秒和 2 秒，不会因为启用多环境而冒险加快菜单输入。
-
-## 实现约束
-
-当前 checkpoint 格式为 8：在身体框中心坐标修复的基础上，修正了“Boss 是否朝向小骑士”
-的左右判断。格式 4 的示范可由 `python/train_bc.py` 按原始位置和朝向迁移；旧网络不能直接续接。
-离线分析训练日志可用 `python/summarize_run.py`。
-
-- 每个 worker 在导入 `game_state` 前设置自己的 `HOLLOWRL_PORT`。
-- rollout 期间模型参数固定，收集结束后中央进程才更新。
-- GAE 沿每个环境自己的时间轴计算，之后才合并 batch。
-- observation normalization、optimizer、checkpoint 只存在于中央进程。
-- 某个环境死亡后可独立重置，不会阻塞另一个环境继续 step。
+rollout 期间权重固定，GAE 沿各环境时间轴计算后合并，归一化、优化器与 checkpoint 由中央维护。评估打断的未完成训练回合记为 `episode_interrupted`，不混入完整回合平均值。

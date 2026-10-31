@@ -67,7 +67,6 @@ public partial class HollowRL : BaseUnityPlugin
     private bool trainingPaused;
     private volatile float requestedGameSpeed = -1f;
     private volatile bool serverRunning = true;
-    private bool inputReady;
     // Boss Control FSM name. Pure Vessel uses "Control"; Traitor Lord uses
     // "Mantis". Overridable via --hollowrl-boss-fsm= without a recompile.
     private readonly string bossFsmName = ResolveBossFsmName();
@@ -82,17 +81,6 @@ public partial class HollowRL : BaseUnityPlugin
         }
         return "Control";
     }
-
-    // A short-lived, automatic diagnostic recording is opened only while the
-    // exact Pure Vessel object is present. It captures the information needed
-    // to map FSM/animation states and hazard objects to attacks without
-    // bloating BepInEx's normal log or recording unrelated gameplay.
-    private const float DiagnosticInterval = 0.05f;
-    private float nextDiagnosticAt;
-    private StreamWriter diagnosticWriter;
-    private int diagnosticBossId = int.MinValue;
-    private Component[] diagnosticComponents = new Component[0];
-    private readonly HashSet<int> diagnosticColliderDumped = new HashSet<int>();
 
     private int ResolvePort()
     {
@@ -212,10 +200,9 @@ public partial class HollowRL : BaseUnityPlugin
     {
         FightResetTick();
         // Input injection has to be wired up before anything reads input this
-        // frame. InputHandler does not exist until a save is loaded, so this
-        // keeps retrying until it resolves and then costs one bool check.
-        if (!inputReady)
-            inputReady = InputInjector.TryResolve(Logger);
+        // frame. Scene/input setup can replace HeroActions after the first
+        // binding, so check its identity every frame and rebind as needed.
+        InputInjector.TryResolve(Logger);
 
         // Apply whatever the trainer asked for since the last frame. Commands
         // arrive on socket threads and are only ever applied here, on the main
@@ -235,13 +222,9 @@ public partial class HollowRL : BaseUnityPlugin
 
         bool speedToggle = Input.GetKeyDown(KeyCode.O);
         bool pauseToggle = Input.GetKeyDown(KeyCode.P);
-        bool discoveryDump = Input.GetKeyDown(KeyCode.F10);
 
         if (speedToggle)
             Time.timeScale = Mathf.Approximately(Time.timeScale, 1f) ? 2f : 1f;
-
-        if (discoveryDump)
-            DumpBossDiscovery();
 
         lock (posLock)
         {
@@ -314,7 +297,6 @@ public partial class HollowRL : BaseUnityPlugin
                 if (victoryDetectedWithoutHero)
                     hitCount++;
             }
-            CloseDiagnosticRecording();
             return;
         }
 
@@ -452,125 +434,6 @@ public partial class HollowRL : BaseUnityPlugin
             wasInvulnerable = invulnerable;
         }
 
-        UpdateDiagnosticRecording(
-            boss, box, velocity, kHealth, onGround,
-            health, bPosition, bVelocity, bCollider, currentHazards);
-    }
-
-
-    private void UpdateDiagnosticRecording(
-        HealthManager boss,
-        Bounds currentKnightBox,
-        Vector2 currentKnightVelocity,
-        int currentKnightHealth,
-        bool currentOnGround,
-        int currentBossHealth,
-        Vector2 currentBossPosition,
-        Vector2 currentBossVelocity,
-        Collider2D selectedBossCollider,
-        List<KnightPos.HazardSnapshot> currentHazards)
-    {
-        if (boss == null)
-        {
-            CloseDiagnosticRecording();
-            return;
-        }
-
-        int bossId = boss.GetInstanceID();
-        if (diagnosticWriter == null || diagnosticBossId != bossId)
-        {
-            CloseDiagnosticRecording();
-            try
-            {
-                string directory = Path.Combine(Paths.BepInExRootPath, "HollowRL_Diagnostics");
-                Directory.CreateDirectory(directory);
-                string filename = "pure_vessel_"
-                    + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff")
-                    + "_" + bossId + ".tsv";
-                string path = Path.Combine(directory, filename);
-                diagnosticWriter = new StreamWriter(path, false, new UTF8Encoding(false));
-                diagnosticWriter.AutoFlush = true;
-                diagnosticWriter.WriteLine(
-                    "game_time\treal_time\tboss_id\tboss_hp\tboss_x\tboss_y"
-                    + "\tboss_vx\tboss_vy\tknight_x\tknight_y\tknight_vx\tknight_vy"
-                    + "\tknight_hp\ton_ground\tfsms\tanimations\thazard_count\thazards"
-                    + "\tboss_collider_id\tboss_colliders");
-                diagnosticBossId = bossId;
-                diagnosticComponents = boss.GetComponentsInChildren<Component>(true);
-                diagnosticColliderDumped.Clear();
-                nextDiagnosticAt = 0f;
-                Logger.LogInfo("HollowRL: Pure Vessel diagnostics -> " + path);
-            }
-            catch (Exception exc)
-            {
-                Logger.LogWarning("HollowRL: cannot open diagnostics file - " + exc.Message);
-                diagnosticWriter = null;
-                diagnosticBossId = bossId;
-                return;
-            }
-        }
-
-        if (diagnosticWriter == null || Time.unscaledTime < nextDiagnosticAt)
-            return;
-        nextDiagnosticAt = Time.unscaledTime + DiagnosticInterval;
-
-        try
-        {
-            Vector2 knightCenter = currentKnightBox.center;
-            int colliderId = selectedBossCollider != null
-                ? selectedBossCollider.GetInstanceID() : 0;
-            var line = new StringBuilder();
-            line.Append(FormatFloat(Time.time)).Append('\t')
-                .Append(FormatFloat(Time.unscaledTime)).Append('\t')
-                .Append(bossId).Append('\t')
-                .Append(currentBossHealth).Append('\t')
-                .Append(FormatFloat(currentBossPosition.x)).Append('\t')
-                .Append(FormatFloat(currentBossPosition.y)).Append('\t')
-                .Append(FormatFloat(currentBossVelocity.x)).Append('\t')
-                .Append(FormatFloat(currentBossVelocity.y)).Append('\t')
-                .Append(FormatFloat(knightCenter.x)).Append('\t')
-                .Append(FormatFloat(knightCenter.y)).Append('\t')
-                .Append(FormatFloat(currentKnightVelocity.x)).Append('\t')
-                .Append(FormatFloat(currentKnightVelocity.y)).Append('\t')
-                .Append(currentKnightHealth).Append('\t')
-                .Append(currentOnGround ? 1 : 0).Append('\t')
-                .Append(ReadFsmStates()).Append('\t')
-                .Append(ReadAnimationNames()).Append('\t')
-                .Append(currentHazards.Count).Append('\t')
-                .Append(FormatHazards(currentHazards)).Append('\t')
-                .Append(colliderId).Append('\t');
-            // The full hierarchy is needed once per selected collider, not
-            // on every 50 ms sample of a long training run.
-            if (diagnosticColliderDumped.Add(colliderId))
-                line.Append(FormatBossColliders(boss));
-            diagnosticWriter.WriteLine(line.ToString());
-        }
-        catch (Exception exc)
-        {
-            Logger.LogWarning("HollowRL: diagnostic write failed - " + exc.Message);
-            CloseDiagnosticRecording();
-        }
-    }
-
-
-    private static string FormatBossColliders(HealthManager boss)
-    {
-        var entries = new List<string>();
-        foreach (Collider2D collider in boss.GetComponentsInChildren<Collider2D>(true))
-        {
-            if (collider == null)
-                continue;
-            Bounds box = collider.bounds;
-            entries.Add(collider.GetInstanceID() + "~"
-                + Sanitize(collider.gameObject.name) + "~"
-                + Sanitize(collider.GetType().Name) + "~"
-                + (collider.enabled ? "1" : "0") + "~"
-                + (collider.gameObject.activeInHierarchy ? "1" : "0") + "~"
-                + (collider.isTrigger ? "1" : "0") + "~"
-                + FormatFloat(box.min.x) + "~" + FormatFloat(box.min.y) + "~"
-                + FormatFloat(box.max.x) + "~" + FormatFloat(box.max.y));
-        }
-        return string.Join("||", entries.ToArray());
     }
 
 
@@ -600,43 +463,6 @@ public partial class HollowRL : BaseUnityPlugin
         return "";
     }
 
-    private string ReadFsmStates()
-    {
-        var states = new List<string>();
-        foreach (Component component in diagnosticComponents)
-        {
-            if (component == null || component.GetType().Name != "PlayMakerFSM")
-                continue;
-
-            object fsmName = GetMemberValue(component, "FsmName");
-            object activeState = GetMemberValue(component, "ActiveStateName");
-            if (activeState == null)
-            {
-                object fsm = GetMemberValue(component, "Fsm");
-                activeState = GetMemberValue(fsm, "ActiveStateName");
-            }
-            states.Add(Sanitize(fsmName) + ":" + Sanitize(activeState));
-        }
-        return string.Join("|", states.ToArray());
-    }
-
-
-    private string ReadAnimationNames()
-    {
-        var animations = new List<string>();
-        foreach (Component component in diagnosticComponents)
-        {
-            if (component == null || component.GetType().Name != "tk2dSpriteAnimator")
-                continue;
-
-            object clip = GetMemberValue(component, "CurrentClip");
-            object clipName = GetMemberValue(clip, "name") ?? GetMemberValue(clip, "Name");
-            animations.Add(Sanitize(clipName));
-        }
-        return string.Join("|", animations.ToArray());
-    }
-
-
     private static object GetMemberValue(object target, string name)
     {
         if (target == null)
@@ -657,84 +483,6 @@ public partial class HollowRL : BaseUnityPlugin
     }
 
 
-    /// <summary>
-    /// F10: dump every HealthManager (plus its PlayMaker FSMs) in the current
-    /// scene to the BepInEx log. Used once per new boss to discover its object
-    /// name, scene name and Control-FSM state vocabulary - the values that
-    /// KnightPos.cs and agent/action.py hardcode for the target boss.
-    /// </summary>
-    private void DumpBossDiscovery()
-    {
-        Logger.LogWarning("HollowRL: === boss discovery dump ===");
-        try
-        {
-            if (HeroController.instance != null)
-            {
-                Vector3 kpos = HeroController.instance.transform.position;
-                Logger.LogWarning("HollowRL: [knight] pos=("
-                    + FormatFloat(kpos.x) + "," + FormatFloat(kpos.y) + ")");
-            }
-
-            foreach (HealthManager candidate in FindObjectsOfType<HealthManager>())
-            {
-                if (candidate == null)
-                    continue;
-                GameObject go = candidate.gameObject;
-                if (go == null)
-                    continue;
-
-                var fsmDetails = new List<string>();
-                foreach (Component component in candidate.GetComponentsInChildren<Component>(true))
-                {
-                    if (component == null || component.GetType().Name != "PlayMakerFSM")
-                        continue;
-                    object fsmName = GetMemberValue(component, "FsmName");
-                    object fsm = GetMemberValue(component, "Fsm");
-                    object states = GetMemberValue(fsm, "States");
-                    var stateNames = new List<string>();
-                    if (states is System.Collections.IEnumerable enumerable)
-                        foreach (object state in enumerable)
-                            stateNames.Add(Sanitize(GetMemberValue(state, "Name")));
-                    fsmDetails.Add(Sanitize(fsmName) + "={" + string.Join(",", stateNames) + "}");
-                }
-
-                Logger.LogWarning("HollowRL: [boss] name='" + go.name
-                    + "' scene='" + go.scene.name
-                    + "' hp=" + candidate.hp
-                    + " active=" + go.activeInHierarchy
-                    + " root='" + go.transform.root.name + "'");
-                if (fsmDetails.Count > 0)
-                    Logger.LogWarning("HollowRL: [fsm] " + string.Join(" | ", fsmDetails.ToArray()));
-            }
-        }
-        catch (Exception exc)
-        {
-            Logger.LogWarning("HollowRL: discovery dump failed - " + exc.Message);
-        }
-        Logger.LogWarning("HollowRL: === end boss discovery dump ===");
-    }
-
-
-    private static string FormatHazards(List<KnightPos.HazardSnapshot> currentHazards)
-    {
-        var entries = new List<string>();
-        foreach (KnightPos.HazardSnapshot hazard in currentHazards)
-        {
-            Bounds box = hazard.Box;
-            entries.Add(
-                hazard.InstanceId + "~"
-                + Sanitize(hazard.ObjectName) + "~"
-                + Sanitize(hazard.RootName) + "~"
-                + Sanitize(hazard.HierarchyPath) + "~"
-                + (hazard.BossAttached ? "1" : "0") + "~"
-                + FormatFloat(box.min.x) + "~" + FormatFloat(box.min.y) + "~"
-                + FormatFloat(box.max.x) + "~" + FormatFloat(box.max.y) + "~"
-                + FormatFloat(hazard.Velocity.x) + "~" + FormatFloat(hazard.Velocity.y));
-        }
-        return string.Join("||", entries.ToArray());
-    }
-
-
     private static string FormatFloat(float value)
     {
         return value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
@@ -751,20 +499,6 @@ public partial class HollowRL : BaseUnityPlugin
             .Replace("\n", " ")
             .Replace("~", "-")
             .Replace("|", "/");
-    }
-
-
-    private void CloseDiagnosticRecording()
-    {
-        if (diagnosticWriter != null)
-        {
-            diagnosticWriter.Dispose();
-            diagnosticWriter = null;
-            Logger.LogInfo("HollowRL: Pure Vessel diagnostic recording closed");
-        }
-        diagnosticBossId = int.MinValue;
-        diagnosticComponents = new Component[0];
-        diagnosticColliderDumped.Clear();
     }
 
 
@@ -788,7 +522,7 @@ public partial class HollowRL : BaseUnityPlugin
         // so the mod served ONE python client per game session. After that
         // client went away the loop exited and nothing ever accepted again -
         // but the TcpListener stayed bound, so later connects still succeeded
-        // via the OS backlog and then hung with no reply. Restarting main.py
+        // via the OS backlog and then hung with no reply. Restarting main_multi.py
         // (or switching between it and the dashboard) bricked the mod until
         // the game itself was restarted. Accept in a loop instead.
         //
@@ -1128,7 +862,6 @@ public partial class HollowRL : BaseUnityPlugin
     {
         if (resetPlugin == this) resetPlugin = null;
         serverRunning = false;
-        CloseDiagnosticRecording();
 
         if (server != null)
             server.Stop();

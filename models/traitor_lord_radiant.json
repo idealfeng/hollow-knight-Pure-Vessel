@@ -1,0 +1,52 @@
+{
+  "checkpoint": "traitor_lord_radiant.pth",
+  "source_update": 1000,
+  "source_sha256": "ab46593c53f8f8af615ac6d2133c3df379cb2f07d22517ee40338b02a9d97221",
+  "sha256": "b4fd013da86959bd8c07833504b2052bfd4fc600de394e94dd33cc21d265eca4",
+  "evaluation": {
+    "episodes": 40,
+    "wins": 4,
+    "nohit_wins": 4,
+    "boss_level": 2,
+    "note": "One model-selection batch; not an independently established win rate."
+  },
+  "inference_config": {
+    "boss_level": 2,
+    "episode_time_limit": 120.0,
+    "observation_time_limit": 60.0,
+    "game_speed": 1.0,
+    "reward_profile": "radiant_spacing_v1",
+    "action_selection": "greedy"
+  },
+  "contents": "Exact source policy and observation normalizer; optimizer and local paths omitted.",
+  "release_validation": {
+    "date": "2026-10-31",
+    "python_regression_tests": 130,
+    "input_rebinding_checks": 16,
+    "mod_build": "passed",
+    "installed_mod_sha256": "A4B7798346E5F5B1AF9530BAEB1F7E9AE98281D6D2FE717FE282E0996A5EAFAE",
+    "native_radiant_fights": [
+      {
+        "won": false,
+        "masks_lost": 9,
+        "minimum_boss_hp": 409,
+        "control_steps": 512
+      },
+      {
+        "won": false,
+        "masks_lost": 9,
+        "minimum_boss_hp": 442,
+        "control_steps": 428
+      },
+      {
+        "won": true,
+        "masks_lost": 0,
+        "minimum_boss_hp": 0,
+        "control_steps": 816
+      }
+    ],
+    "checkpoint_unchanged": true,
+    "normalizer_unchanged": true,
+    "purpose": "Functional smoke test, stopped after first flawless win; not a win-rate estimate."
+  }
+}

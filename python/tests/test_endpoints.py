@@ -5,7 +5,7 @@ import threading
 import unittest
 
 from endpoints import parse_endpoint, resolve_endpoints
-from test_remote_endpoints import check_endpoint
+from check_endpoints import check_endpoint
 
 
 class ParseEndpointTests(unittest.TestCase):

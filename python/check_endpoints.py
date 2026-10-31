@@ -1,11 +1,11 @@
-"""Read-only connectivity probe for local and remote Hollow Knight mods.
+"""Connectivity probe for idle local and remote Hollow Knight mods.
 
 Connects to each HOST:PORT, sends a single ``pos`` request and validates that
-the reply looks like the mod's state frame. It never sends KILL, SPEED or any
-input action, so it is safe to run against a live fight.
+the reply looks like the mod's state frame. Run this only when no trainer or
+policy player controls the endpoint: disconnecting a probe can clear inputs.
 
 Usage:
-    python test_remote_endpoints.py 127.0.0.1:9001 192.168.1.50:9002
+    python check_endpoints.py 127.0.0.1:9001 192.168.1.50:9002
 """
 
 import argparse

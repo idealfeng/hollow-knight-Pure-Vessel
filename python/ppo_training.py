@@ -87,7 +87,7 @@ def ppo_update(model,
             # epoch the policy is unchanged, so ratio == 1 exactly.
             # Summing per-head logratios equals the joint logratio - the
             # clipped objective and the early-stop trigger are unchanged from
-            # before this refactor (verified: see test_head_refactor.py).
+            # before the per-head diagnostic refactor.
             logratio_per_head = new_logprobs - old_logprobs[mb]
             logratio = logratio_per_head.sum(dim=1)
             ratio = logratio.exp()

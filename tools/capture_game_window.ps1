@@ -1,6 +1,6 @@
 param(
     [int]$Port = 9001,
-    [string]$Output = "artifacts/game_$Port.png"
+    [string]$Output = "python/runs/screenshots/game_$Port.png"
 )
 $ErrorActionPreference = 'Stop'
 $matches = @(Get-CimInstance Win32_Process -Filter "Name = 'hollow_knight.exe'" |

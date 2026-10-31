@@ -44,16 +44,16 @@ using UnityEngine;
 /// </summary>
 public static class InputInjector
 {
-    // Logical action name (what Python sends) -> the game's PlayerAction.
+    // Logical action name (what Python sends) -> persistent injected state.
     // Names are the trainer's vocabulary, deliberately not the game's field
     // names, so Python never has to care about the in-game key bindings.
     private static readonly Dictionary<string, ActionState> Actions =
-        new Dictionary<string, ActionState>();
+        CreateActions();
 
     // Keyed by the control instance so a patched getter finds its own state in
-    // one lookup. Built once in TryResolve and never mutated afterwards, which
-    // is what lets the getters below run lock-free.
-    private static readonly Dictionary<OneAxisInputControl, ActionState> States =
+    // one lookup. Publish a fresh dictionary when HeroActions is replaced;
+    // published dictionaries are never mutated, so getters stay lock-free.
+    private static volatile Dictionary<OneAxisInputControl, ActionState> States =
         new Dictionary<OneAxisInputControl, ActionState>();
 
     // Commands arrive on socket threads; Unity state may only be touched on
@@ -62,7 +62,9 @@ public static class InputInjector
     private static readonly Queue<Command> Pending = new Queue<Command>();
     private static readonly object QueueGate = new object();
 
-    private static bool resolved;
+    private static HeroActions boundActions;
+    private static bool patchAttempted;
+    private static bool gettersPatched;
     public static bool Ready { get; private set; }
 
     private sealed class ActionState
@@ -89,47 +91,81 @@ public static class InputInjector
     // Setup
 
     /// <summary>
-    /// Bind the actions and patch the getters. Safe to call repeatedly -
-    /// InputHandler does not exist until the game has loaded, so this retries
-    /// until it succeeds.
+    /// Refresh action bindings on the main thread. The game can replace its
+    /// HeroActions during scene/input setup; retain logical held/edge state
+    /// while rebinding the new controls. Harmony getters are patched once.
     /// </summary>
     public static bool TryResolve(BepInEx.Logging.ManualLogSource log)
     {
-        if (resolved)
-            return Ready;
-
         InputHandler handler = InputHandler.Instance;
         if (handler == null || handler.inputActions == null)
-            return false;   // not loaded yet - try again next frame
-
-        resolved = true;
+        {
+            Ready = false;
+            if (boundActions != null)
+            {
+                States = new Dictionary<OneAxisInputControl, ActionState>();
+                boundActions = null;
+            }
+            return false;
+        }
 
         HeroActions a = handler.inputActions;
+        if (object.ReferenceEquals(a, boundActions))
+            return Ready;
 
-        Bind("left", a.left);
-        Bind("right", a.right);
-        Bind("up", a.up);
-        Bind("down", a.down);
-        Bind("jump", a.jump);
-        Bind("attack", a.attack);
-        Bind("dash", a.dash);
-        Bind("cast", a.cast);
-        Bind("quick_cast", a.quickCast);
-        Bind("super_dash", a.superDash);
-        Bind("dream_nail", a.dreamNail);
-        Bind("submit", a.menuSubmit);
-        Bind("cancel", a.menuCancel);
-        Bind("pause", a.pause);
+        var bindings = new Dictionary<OneAxisInputControl, ActionState>();
+        bool complete = Bind(bindings, "left", a.left);
+        complete &= Bind(bindings, "right", a.right);
+        complete &= Bind(bindings, "up", a.up);
+        complete &= Bind(bindings, "down", a.down);
+        complete &= Bind(bindings, "jump", a.jump);
+        complete &= Bind(bindings, "attack", a.attack);
+        complete &= Bind(bindings, "dash", a.dash);
+        complete &= Bind(bindings, "cast", a.cast);
+        complete &= Bind(bindings, "quick_cast", a.quickCast);
+        complete &= Bind(bindings, "super_dash", a.superDash);
+        complete &= Bind(bindings, "dream_nail", a.dreamNail);
+        complete &= Bind(bindings, "submit", a.menuSubmit);
+        complete &= Bind(bindings, "cancel", a.menuCancel);
+        complete &= Bind(bindings, "pause", a.pause);
+        if (!complete)
+        {
+            Ready = false;
+            States = new Dictionary<OneAxisInputControl, ActionState>();
+            boundActions = null;
+            return false;
+        }
 
-        Ready = PatchGetters(log);
+        States = bindings;
+        boundActions = a;
+        if (!patchAttempted)
+        {
+            patchAttempted = true;
+            gettersPatched = PatchGetters(log);
+        }
+        Ready = gettersPatched;
+        log.LogInfo("HollowRL: refreshed input action bindings (" + bindings.Count + " actions)");
         return Ready;
     }
 
-    private static void Bind(string name, PlayerAction action)
+    private static Dictionary<string, ActionState> CreateActions()
     {
-        var state = new ActionState();
-        Actions[name] = state;
-        States[action] = state;
+        var actions = new Dictionary<string, ActionState>();
+        foreach (string name in new[] {
+            "left", "right", "up", "down", "jump", "attack", "dash",
+            "cast", "quick_cast", "super_dash", "dream_nail", "submit", "cancel", "pause",
+        })
+            actions.Add(name, new ActionState());
+        return actions;
+    }
+
+    private static bool Bind(Dictionary<OneAxisInputControl, ActionState> bindings,
+                             string name, PlayerAction action)
+    {
+        if (action == null)
+            return false;
+        bindings[action] = Actions[name];
+        return true;
     }
 
     /// <summary>
@@ -187,9 +223,8 @@ public static class InputInjector
     //
     // These run on EVERY read of EVERY OneAxisInputControl in the game - menus
     // and device controls included - so they are deliberately lock-free:
-    // States is fully built before the first patch is applied and never
-    // mutated again, and the ActionState fields are written only by Tick(), on
-    // the same (main) thread that reads them here.
+    // States always refers to an immutable binding snapshot. ActionState
+    // fields are written only by Tick(), on the main thread that reads them.
     //
     // Returning false skips the original getter and uses our __result.
 
@@ -289,9 +324,8 @@ public static class InputInjector
     /// Must run once per frame. Returns true if a KILL was requested since the
     /// last frame.
     ///
-    /// No Ready guard: if binding never happened, States/Actions are empty and
-    /// every loop below is a no-op - but KILL still has to get through, so a
-    /// failed input binding does not also break episode resets.
+    /// No Ready guard: logical state and CLEAR/tap expiry must still advance
+    /// while InputHandler is absent, and KILL must still reach episode resets.
     /// </summary>
     public static bool Tick()
     {
@@ -299,7 +333,7 @@ public static class InputInjector
         float now = Time.unscaledTime;
         int frame = Time.frameCount;
 
-        foreach (ActionState state in States.Values)
+        foreach (ActionState state in Actions.Values)
             state.HeldLastFrame = state.Held;
 
         // Drain into a local array so the lock is held only for the dequeue,
@@ -326,7 +360,7 @@ public static class InputInjector
 
                 if (cmd.Kind == "CLEAR")
                 {
-                    foreach (ActionState state in States.Values)
+                    foreach (ActionState state in Actions.Values)
                     {
                         state.Held = false;
                         state.ReleaseAt = 0f;
@@ -367,7 +401,7 @@ public static class InputInjector
         // be pressed and released before the game ever polled it, and simply
         // never happen. This is the same problem pyautogui.press() had, which
         // is why the Python side grew an explicit hold duration.
-        foreach (ActionState state in States.Values)
+        foreach (ActionState state in Actions.Values)
         {
             if (state.Held && state.ReleaseAt > 0f
                 && now >= state.ReleaseAt

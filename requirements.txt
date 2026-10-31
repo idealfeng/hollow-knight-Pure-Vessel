@@ -2,7 +2,7 @@
 #    python3 -m venv .venv
 #   .venv/bin/pip install -r requirements.txt
 #
-# tkinter (for test_gui_client.py) is not a pip package on Linux:
+# tkinter (for the training monitor) is not a pip package on Linux:
 #   sudo pacman -S tk
 numpy
 torch

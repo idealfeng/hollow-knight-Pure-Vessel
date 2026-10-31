@@ -4,7 +4,7 @@ from dataclasses import asdict
 import unittest
 
 from agent.reward import RewardTracker, calculate_reward, get_reward_config
-from test_reward import make_state
+from .test_reward import make_state
 
 
 class NoHitRewardTests(unittest.TestCase):

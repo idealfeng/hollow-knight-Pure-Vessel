@@ -3,7 +3,7 @@ import unittest
 
 from agent.reward import RewardTracker, calculate_reward, get_reward_config
 from game_state import Hazard
-from test_reward import make_state
+from .test_reward import make_state
 
 
 def state(fsm, x=None, identifier=1, **kwargs):

@@ -17,16 +17,8 @@ PORT = int(os.environ.get("HOLLOWRL_PORT", "9000"))
 RECONNECT_DELAY = 0.5   # seconds to wait before retrying a failed connect
 SOCKET_TIMEOUT = 2.0    # give up on a silent server rather than blocking forever
 
-# The loop below had no throttling at all - it round-tripped sendall/recv on
-# a loopback socket as fast as the OS and the mod's lock could return one,
-# almost certainly several hundred Hz or more. Nothing that reads these
-# globals needs anywhere close to that: main.py's control loop runs at 15 Hz
-# (CONTROL_HZ), the fastest UI consumer (test_gui_client.py) ticks every
-# 30 ms (~33 Hz). 100 Hz is comfortably above every real consumer while
-# cutting out most of the wasted round trips - each one also taking a lock
-# on the mod's side that Update() needs every rendered frame, so hammering
-# this needlessly competes for CPU with the actual game, which is the real
-# bottleneck (measured elsewhere in this project at ~98% of wall-clock time).
+# Poll above the 10 Hz policy rate while allowing Unity's Update thread to
+# acquire the shared state lock between requests.
 POLL_INTERVAL = 0.01
 
 

@@ -235,7 +235,6 @@ public partial class HollowRL
         bossDefeated = false;
         bossHealthTracked = false;
         knightHealthTracked = false;
-        CloseDiagnosticRecording();
 
         // This is the same one-shot setup callback used by BossChallengeUI.
         // Re-register it because BossSceneController consumes it in Awake.

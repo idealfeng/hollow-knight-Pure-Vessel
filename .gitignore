@@ -10,8 +10,8 @@ __pycache__/
 .venv/
 venv/
 
-# Training artifacts are local experiment state. A fresh Pure Vessel run must
-# not silently resume a checkpoint trained against a different boss/environment.
+# Full training checkpoints and datasets stay local; publish only the chosen
+# portable inference model below.
 *.npz
 *.pth
 runs_archive/
@@ -21,3 +21,4 @@ runs/
 .claude/settings.local.json
 mod_backups/
 artifacts/
+!models/traitor_lord_radiant.pth

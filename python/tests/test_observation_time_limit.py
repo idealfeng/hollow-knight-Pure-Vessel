@@ -9,7 +9,7 @@ import game_state
 with patch.object(game_state, "start"):
     from hollow_knight_env import HollowKnightEnv
 
-from test_reward import make_state
+from .test_reward import make_state
 
 
 class ObservationTimeLimitTests(unittest.TestCase):
