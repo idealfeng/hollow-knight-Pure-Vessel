@@ -97,13 +97,13 @@ def verified_checkpoint(payload, reward_profile="radiant_spells_v1"):
             or config.get("reward_profile") != reward_profile
             or config.get("boss_level") != 2
             or config.get("reward_config") != asdict(get_reward_config(reward_profile))
-            or config.get("episode_time_limit") != 120 or config.get("observation_time_limit") != 60
+            or config.get("episode_time_limit") not in (120, 150) or config.get("observation_time_limit") != 60
             or config.get("game_speed") != 1 or config.get("train_mode") != "all"):
         raise ValueError("Selected full checkpoint does not match the verified 21-damage spell run")
     return saved
 
 
-def validate_dodge_selection(result, directory, original_digest, entropy):
+def validate_dodge_selection(result, directory, original_digest, entropy, episode_time_limit=None):
     """Recheck promotion evidence before changing the continuation objective."""
     if result["entropy_coefficient"] != entropy:
         raise ValueError("Reward trial changed the entropy coefficient")
@@ -119,6 +119,10 @@ def validate_dodge_selection(result, directory, original_digest, entropy):
     cc, rc = confirmation.get("candidate", {}), confirmation.get("control", {})
     if not qualifies(candidate, control, 4) or not qualifies(cc, rc, 2):
         raise ValueError("Reward trial does not meet screening and confirmation thresholds")
+    if episode_time_limit is not None and any(
+            record.get("episode_time_limit") != episode_time_limit
+            or record.get("observation_time_limit") != 60 for record in (candidate, control, cc, rc)):
+        raise ValueError("Reward trial assessments use a different fight time limit")
     expected = (directory / "candidate/ppo_checkpoint.pth").resolve()
     if Path(result["selected_checkpoint"]).resolve() != expected:
         raise ValueError("Reward trial points at an unexpected candidate")
@@ -133,7 +137,14 @@ def validate_dodge_selection(result, directory, original_digest, entropy):
 
 class Supervisor:
     def __init__(self, directory, poll_seconds=30, total_updates=10000, max_restarts=2,
-                 dodge_trial=False):
+                 dodge_trial=False, episode_time_limit=150.0, continue_checkpoint=None,
+                 reward_profile=None):
+        if episode_time_limit not in (120.0, 150.0):
+            raise ValueError("Continuation supports the verified 120 or requested 150 second horizon")
+        if reward_profile is not None and continue_checkpoint is None:
+            raise ValueError("An explicit reward override requires --continue-checkpoint")
+        if continue_checkpoint is not None and dodge_trial:
+            raise ValueError("Direct continuation does not rerun the completed reward comparison")
         self.directory = directory.resolve()
         self.poll_seconds = poll_seconds
         self.total_updates = total_updates
@@ -141,9 +152,13 @@ class Supervisor:
         self.status_path = self.directory / "auto_continue_status.json"
         self.stop_file = self.directory / "STOP_AUTO_CONTINUE"
         self.dodge_trial = dodge_trial
+        self.episode_time_limit = episode_time_limit
         self.continuation_profile = "radiant_spells_v1"
         self.continuation_assessment = None
         self.continuation_fights = None
+        self.continue_checkpoint = Path(continue_checkpoint).resolve() if continue_checkpoint is not None else None
+        self.requested_reward_profile = reward_profile
+        self.allow_reward_change = False
 
     def status(self, phase, **details):
         write_json(self.status_path, {"phase": phase, "updated_at_unix": time.time(),
@@ -169,7 +184,11 @@ class Supervisor:
         payload = source.read_bytes()
         if hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError("Selected checkpoint changed before continuation")
-        saved = verified_checkpoint(payload, self.continuation_profile)
+        source_profile = (torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
+                          .get("training_config", {}).get("reward_profile"))
+        saved = verified_checkpoint(payload, source_profile)
+        if source_profile != self.continuation_profile and not self.allow_reward_change:
+            raise ValueError("Changing the reward requires explicit direct-continuation authorization")
         if self.total_updates <= saved["update"]:
             raise ValueError("Continuation budget must exceed the selected checkpoint update")
         envelope = self.directory / ("continuation_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -179,7 +198,8 @@ class Supervisor:
         backup.mkdir()
         initial = backup / f"source_{saved['update']}.pth"
         initial.write_bytes(payload)
-        (training / "best_eval_checkpoint.pth").write_bytes(payload)
+        if source_profile == self.continuation_profile:
+            (training / "best_eval_checkpoint.pth").write_bytes(payload)
         assessed = None
         label = "baseline_425"
         fights_path = None
@@ -211,15 +231,23 @@ class Supervisor:
                             nohit_rate=wins / 40, win_rate=statistics.mean(bool(r["info"]["won"]) for r in fights),
                             selection_objective="nohit")
             assessed["selection_score"] = list(nohit_selection_score(assessed))
-        else:
+        elif self.continue_checkpoint is None:
             assessed = json.loads((self.directory / "backup/best_eval.json").read_text())
-        write_json(training / "best_eval.json", assessed)
+        assessment_horizon = (assessed.get("episode_time_limit", saved["training_config"]["episode_time_limit"])
+                              if assessed else None)
+        write_json(backup / "source_assessment.json", {**(assessed or {}),
+                                                     "episode_time_limit": assessment_horizon,
+                                                     "assessed": assessed is not None})
+        # A longer fight budget changes the assessment conditions. Preserve
+        # historical evidence without comparing its score to fresh 150s runs.
+        if assessed and assessment_horizon == self.episode_time_limit and source_profile == self.continuation_profile:
+            write_json(training / "best_eval.json", assessed)
         endpoints = json.loads((self.directory / "experiment.json").read_text())["endpoints"]
         arguments = [str(ROOT / "python/.venv/Scripts/python.exe"), "-u", str(ROOT / "python/main_multi.py"), "--endpoints"]
         arguments += endpoints
         arguments += ["--run-dir", str(training), "--init-checkpoint", str(initial),
                       "--action-distribution", "exclusive_directions_spells_v1", "--reward-profile", self.continuation_profile,
-                      "--boss-level", "2", "--eval-objective", "nohit", "--episode-time-limit", "120",
+                      "--boss-level", "2", "--eval-objective", "nohit", "--episode-time-limit", str(self.episode_time_limit),
                       "--observation-time-limit", "60", "--control-hz", "10", "--frame-stack", "4",
                       "--game-speed", "1", "--lr", "0.0001", "--ent-coef", str(entropy),
                       "--freeze-obs-norm", "--steps-per-env", "512", "--total-updates", str(self.total_updates),
@@ -229,6 +257,11 @@ class Supervisor:
                     "reward_changed": self.continuation_profile != "radiant_spells_v1",
                     "reward_profile": self.continuation_profile,
                     "reward_config": asdict(get_reward_config(self.continuation_profile)),
+                    "episode_time_limit": self.episode_time_limit, "observation_time_limit": 60,
+                    "source_reward_profile": source_profile,
+                    "user_requested_reward_override": self.requested_reward_profile is not None,
+                    "best_score_seeded": bool(assessed and assessment_horizon == self.episode_time_limit
+                                              and source_profile == self.continuation_profile),
                     "directory": str(envelope), "training_directory": str(training), "arguments": arguments}
         write_json(self.directory / "continuation_decision.json", decision)
         write_json(envelope / "launch.json", decision)
@@ -260,7 +293,7 @@ class Supervisor:
     def run(self, max_wait_hours=12):
         deadline = time.monotonic() + max_wait_hours * 3600
         selection = None
-        while not self.stopped() and time.monotonic() < deadline:
+        while self.continue_checkpoint is None and not self.stopped() and time.monotonic() < deadline:
             try:
                 progress = json.loads((self.directory / "progress.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -276,15 +309,34 @@ class Supervisor:
                 self.status("comparison_failed_using_preserved_source", error=progress.get("error"))
                 break
             self.status("waiting_for_comparison", comparison_phase=phase, active_branch=progress.get("active"),
-                        pending_dodge_reward_trial=self.dodge_trial)
+                        pending_dodge_reward_trial=self.dodge_trial,
+                        next_episode_time_limit=self.episode_time_limit)
             time.sleep(self.poll_seconds)
         else:
-            self.status("disabled" if self.stopped() else "comparison_wait_limit_reached")
-            return
+            if self.continue_checkpoint is None or self.stopped():
+                self.status("disabled" if self.stopped() else "comparison_wait_limit_reached")
+                return
         if not self.wait_until_idle("waiting_for_previous_trainer_exit"):
             self.status("disabled")
             return
-        source, digest, entropy, reason = choose_checkpoint(self.directory, selection)
+        if self.continue_checkpoint is not None:
+            source = self.continue_checkpoint
+            payload = source.read_bytes()
+            source_config = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False).get("training_config", {})
+            source_profile = source_config.get("reward_profile")
+            verified_checkpoint(payload, source_profile)
+            digest = hashlib.sha256(payload).hexdigest()
+            entropy = source_config["ent_coef"]
+            if entropy not in (0.005, 0.001) or source_config.get("lr") != 0.0001:
+                raise ValueError("Direct continuation must preserve the verified learning rate and entropy")
+            self.continuation_profile = self.requested_reward_profile or source_profile
+            get_reward_config(self.continuation_profile)
+            self.allow_reward_change = self.requested_reward_profile is not None
+            reason = "User explicitly requested direct continuation; preserve full weights, optimizer and normalization"
+            if self.requested_reward_profile is not None:
+                reason += "; retain requested reward instead of repeating automatic comparison/fallback"
+        else:
+            source, digest, entropy, reason = choose_checkpoint(self.directory, selection)
         if self.dodge_trial:
             from dodge_reward_trial import DodgeRewardTrial, TrialStopped
             trial_directory = self.directory / ("dodge_reward_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -295,8 +347,9 @@ class Supervisor:
                        {"directory": str(trial_directory), "kind": "finite_phase_dodge_reward_trial"})
             preserved = source, digest, entropy, reason
             try:
-                result = DodgeRewardTrial(trial_directory, source, digest, entropy, endpoints, self.stopped).run()
-                validate_dodge_selection(result, trial_directory, digest, entropy)
+                result = DodgeRewardTrial(trial_directory, source, digest, entropy, endpoints, self.stopped,
+                                          episode_time_limit=self.episode_time_limit).run()
+                validate_dodge_selection(result, trial_directory, digest, entropy, self.episode_time_limit)
                 selected = Path(result["selected_checkpoint"])
                 payload = selected.read_bytes()
                 if hashlib.sha256(payload).hexdigest() != result["selected_sha256"]:
@@ -393,13 +446,20 @@ def main():
     parser.add_argument("--total-updates", type=int, default=10000)
     parser.add_argument("--max-restarts", type=int, default=2)
     parser.add_argument("--max-wait-hours", type=float, default=12)
+    parser.add_argument("--episode-time-limit", type=float, choices=(120.0, 150.0), default=150.0,
+                        help="fight cutoff for the next reward trial and continued training; observation scale stays 60s")
     parser.add_argument("--dodge-trial", action="store_true",
                         help="after entropy comparison, test +0.1 per completed clean boss move before continuation")
+    parser.add_argument("--continue-checkpoint", type=Path,
+                        help="explicitly continue a backed-up full checkpoint instead of selecting from a completed comparison")
+    parser.add_argument("--reward-profile", choices=("radiant_spells_v1", "radiant_spells_dodge_v1"),
+                        help="user-requested reward for a new direct continuation; never changes an existing run in place")
     args = parser.parse_args()
     if args.poll_seconds < 5 or args.total_updates < 1 or not 0 <= args.max_restarts <= 3 or args.max_wait_hours <= 0:
         parser.error("Invalid polling interval, update budget or restart limit")
     supervisor = Supervisor(args.experiment_dir, args.poll_seconds, args.total_updates, args.max_restarts,
-                            dodge_trial=args.dodge_trial)
+                            dodge_trial=args.dodge_trial, episode_time_limit=args.episode_time_limit,
+                            continue_checkpoint=args.continue_checkpoint, reward_profile=args.reward_profile)
     lock = supervisor.directory / "auto_continue.lock"
     try:
         with lock.open("x", encoding="utf-8") as stream:

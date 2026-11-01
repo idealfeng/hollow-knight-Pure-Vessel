@@ -20,7 +20,7 @@ $taskArguments = @(
     '--run-dir', $taskRun, '--init-checkpoint', $taskInit,
     '--action-distribution', 'exclusive_directions_spells_v1',
     '--reward-profile', 'radiant_spells_v1', '--boss-level', '2', '--eval-objective', 'nohit',
-    '--episode-time-limit', '120', '--observation-time-limit', '60',
+    '--episode-time-limit', '150', '--observation-time-limit', '60',
     '--control-hz', '10', '--frame-stack', '4', '--game-speed', '1',
     '--lr', '0.0001', '--ent-coef', '0.005', '--freeze-obs-norm',
     '--steps-per-env', '512', '--total-updates', "$TotalUpdates",

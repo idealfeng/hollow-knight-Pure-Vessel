@@ -3,6 +3,8 @@
 import argparse
 from datetime import datetime
 import json
+from itertools import count
+import math
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -24,13 +26,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--port", type=int, default=9001)
-    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--episodes", type=int, default=100,
+                        help="maximum fights; 0 retries indefinitely until a flawless win")
+    parser.add_argument("--episode-time-limit", type=float, default=None,
+                        help="fight cutoff; defaults to the checkpoint's training limit")
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--reward-profile", default=None)
     args = parser.parse_args()
-    if args.episodes < 1 or not 1 <= args.port <= 65535:
-        parser.error("episodes must be positive and port must be valid")
+    if args.episodes < 0 or not 1 <= args.port <= 65535:
+        parser.error("episodes must be non-negative and port must be valid")
     saved, digest = load_checkpoint(args.checkpoint)
+    training_config = saved.get("training_config", {})
+    episode_time_limit = (args.episode_time_limit if args.episode_time_limit is not None
+                          else training_config.get("episode_time_limit", 120.0))
+    observation_time_limit = training_config.get("observation_time_limit") or 60.0
+    if any(not math.isfinite(value) or value <= 0
+           for value in (episode_time_limit, observation_time_limit)):
+        parser.error("fight and observation time limits must be finite and positive")
     spells = saved.get("action_distribution") == "exclusive_directions_spells_v1"
     action_names = SPELL_ACTION_NAMES if spells else BUTTON_ORDER
     action_sizes = [1] * NUM_BUTTONS + [4] if spells else [1] * NUM_BUTTONS
@@ -51,12 +63,14 @@ def main():
     provenance = {
         "checkpoint": str(args.checkpoint.resolve()), "sha256": digest,
         "update": saved["update"], "port": args.port, "boss_level": 2,
-        "game_speed": 1.0, "episode_time_limit": 120.0,
-        "observation_time_limit": 60.0, "action_selection": "greedy",
+        "game_speed": 1.0, "episode_time_limit": float(episode_time_limit),
+        "observation_time_limit": float(observation_time_limit), "action_selection": "greedy",
+        "episodes_limit": args.episodes, "retry_until_flawless": args.episodes == 0,
         "control_hz": int(saved.get("control_hz", 10)),
         "action_distribution": saved["action_distribution"],
     }
-    reward_profile = args.reward_profile or ("radiant_spells_v1" if spells else "radiant_spacing_v1")
+    reward_profile = (args.reward_profile or training_config.get("reward_profile")
+                      or ("radiant_spells_v1" if spells else "radiant_spacing_v1"))
     provenance["reward_profile"] = reward_profile
     print(json.dumps(provenance), flush=True)
     if args.check_only:
@@ -74,13 +88,15 @@ def main():
     try:
         stage_fresh_fight(endpoint, 2)
         prepare_fight(*endpoint)
-        pool_options = {"observation_time_limit": 60.0}
+        pool_options = {"observation_time_limit": observation_time_limit}
         if spells:
             pool_options["action_distribution"] = saved["action_distribution"]
         pool = ExternalEnvPool([endpoint], provenance["control_hz"], saved["frame_stack"],
-                               120.0, 1.0, reward_profile, 2, **pool_options)
+                               episode_time_limit, 1.0, reward_profile, 2, **pool_options)
         with torch.inference_mode():
-            for episode in range(1, args.episodes + 1):
+            for episode in count(1):
+                if args.episodes and episode > args.episodes:
+                    break
                 def record(result):
                     result["recording_episode"] = episode
                     with (directory / "fights.jsonl").open("a", encoding="utf-8") as stream:
@@ -94,7 +110,8 @@ def main():
                 completed += 1
                 flawless = is_flawless(info)
                 wins += int(flawless)
-                print(f"Fight {episode}/{args.episodes}: won={info['won']} "
+                budget = args.episodes or "until flawless"
+                print(f"Fight {episode}/{budget}: won={info['won']} "
                       f"flawless={flawless} boss_hp={info['min_boss_health']} "
                       f"steps={result['steps']}", flush=True)
                 if flawless:

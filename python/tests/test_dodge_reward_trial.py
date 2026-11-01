@@ -20,6 +20,9 @@ class DodgeRewardTrialTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        root_patch = patch.object(trial_module, "ROOT", self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
         self.source = self.root / "source.pth"
         self.endpoints = ["127.0.0.1:9001", "127.0.0.1:9002", "192.168.0.184:9003", "192.168.0.184:9004"]
         self.base = get_reward_config("radiant_spells_v1")
@@ -65,31 +68,41 @@ class DodgeRewardTrialTests(unittest.TestCase):
         self.assertEqual(digest, self.digest)
         self.assertEqual(saved["optimizer"], self.saved["optimizer"])
         self.assertEqual(saved["obs_norm"], self.saved["obs_norm"])
+        experiment = json.loads((self.trial.directory / "experiment.json").read_text())
+        self.assertEqual((experiment["episode_time_limit"], experiment["observation_time_limit"]), (150, 60))
+        self.assertEqual(saved["training_config"]["episode_time_limit"], 120)
 
-    def test_twenty_updates_mean_exactly_40960_samples_and_same_full_initializer(self):
+    def test_both_profiles_keep_same_40960_sample_budget_and_150_second_limit(self):
         self.trial.prepare()
         child = MagicMock(pid=1234)
         child.poll.return_value = 0
         child.wait.return_value = 0
 
         def launch(*args, **kwargs):
-            run = self.trial.directory / "candidate"
-            config = dict(self.saved["training_config"], reward_profile=trial_module.DODGE_PROFILE,
-                          reward_config=asdict(self.dodge))
+            arguments = args[0]
+            run = Path(arguments[arguments.index("--run-dir") + 1])
+            profile = arguments[arguments.index("--reward-profile") + 1]
+            config = dict(self.saved["training_config"], reward_profile=profile,
+                          reward_config=asdict(get_reward_config(profile)), episode_time_limit=150)
             torch.save(dict(self.saved, update=445, global_step=913408,
                             training_config=config), run / "ppo_checkpoint.pth")
             return child
 
-        with patch.object(self.trial, "stage"), patch.object(self.trial, "check_idle"), \
-                patch.object(trial_module.subprocess, "Popen", side_effect=launch) as launch_mock:
-            checkpoint = self.trial.train("candidate", trial_module.DODGE_PROFILE)
-        args = launch_mock.call_args.args[0]
-        self.assertEqual(args[args.index("--total-updates") + 1], "446")
-        self.assertEqual(args[args.index("--init-checkpoint") + 1], str(self.trial.source))
-        self.assertEqual(args[args.index("--eval-every") + 1], "0")
-        self.assertEqual(args[args.index("--reward-profile") + 1], trial_module.DODGE_PROFILE)
-        self.assertEqual(args[args.index("--ent-coef") + 1], "0.005")
-        self.assertEqual(checkpoint.name, "ppo_checkpoint.pth")
+        for label, profile in (("control", trial_module.CONTROL_PROFILE),
+                               ("candidate", trial_module.DODGE_PROFILE)):
+            with self.subTest(profile=profile), patch.object(self.trial, "stage"), \
+                    patch.object(self.trial, "check_idle"), \
+                    patch.object(trial_module.subprocess, "Popen", side_effect=launch) as launch_mock:
+                checkpoint = self.trial.train(label, profile)
+            args = launch_mock.call_args.args[0]
+            self.assertEqual(args[args.index("--total-updates") + 1], "446")
+            self.assertEqual(args[args.index("--init-checkpoint") + 1], str(self.trial.source))
+            self.assertEqual(args[args.index("--eval-every") + 1], "0")
+            self.assertEqual(args[args.index("--reward-profile") + 1], profile)
+            self.assertEqual(args[args.index("--ent-coef") + 1], "0.005")
+            self.assertEqual(float(args[args.index("--episode-time-limit") + 1]), 150)
+            self.assertEqual(float(args[args.index("--observation-time-limit") + 1]), 60)
+            self.assertEqual(checkpoint.name, "ppo_checkpoint.pth")
 
     def test_incomplete_sampling_budget_is_rejected_even_at_expected_update(self):
         self.trial.prepare()
@@ -99,7 +112,7 @@ class DodgeRewardTrialTests(unittest.TestCase):
 
         def launch(*args, **kwargs):
             config = dict(self.saved["training_config"], reward_profile=trial_module.DODGE_PROFILE,
-                          reward_config=asdict(self.dodge))
+                          reward_config=asdict(self.dodge), episode_time_limit=150)
             torch.save(dict(self.saved, update=445, global_step=913407,
                             training_config=config), self.trial.directory / "candidate/ppo_checkpoint.pth")
             return child
@@ -108,6 +121,60 @@ class DodgeRewardTrialTests(unittest.TestCase):
                 patch.object(trial_module.subprocess, "Popen", side_effect=launch):
             with self.assertRaisesRegex(RuntimeError, "budget/settings"):
                 self.trial.train("candidate", trial_module.DODGE_PROFILE)
+
+    def test_invalid_episode_time_limits_are_rejected_without_accessing_games(self):
+        for value in (0, -1, float("nan"), float("inf"), None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite and positive"):
+                trial_module.DodgeRewardTrial(self.root / "invalid", self.source,
+                                             self.digest, .005, self.endpoints,
+                                             episode_time_limit=value)
+
+    def test_wrong_checkpoint_time_limit_is_rejected_at_full_sample_budget(self):
+        self.trial.prepare()
+        child = MagicMock(pid=1234)
+        child.poll.return_value = 0
+        child.wait.return_value = 0
+
+        def launch(*args, **kwargs):
+            config = dict(self.saved["training_config"], reward_profile=trial_module.DODGE_PROFILE,
+                          reward_config=asdict(self.dodge), episode_time_limit=120)
+            torch.save(dict(self.saved, update=445, global_step=913408,
+                            training_config=config), self.trial.directory / "candidate/ppo_checkpoint.pth")
+            return child
+
+        with patch.object(self.trial, "stage"), patch.object(self.trial, "check_idle"), \
+                patch.object(trial_module.subprocess, "Popen", side_effect=launch):
+            with self.assertRaisesRegex(RuntimeError, "budget/settings"):
+                self.trial.train("candidate", trial_module.DODGE_PROFILE)
+
+    def test_fixed_evaluation_uses_150_seconds_without_changing_observation_scale(self):
+        self.trial.prepare()
+        saved = dict(self.saved, model_hidden=256, model={})
+        normalizer = MagicMock()
+        normalizer.state_dict.return_value = {"count": 1}
+
+        def evaluate(pool, model, normalize, episodes, record):
+            self.assertEqual(episodes, 10)
+            for index in range(4):
+                for episode in range(10):
+                    record({"env": index, "episode_in_eval": episode,
+                            "info": {"boss_level": 2, "reset_mode": "scene",
+                                     "damage_tracking_valid": True, "won": False,
+                                     "damage": 9, "min_boss_health": 400, "hits": 30,
+                                     "truncated_reason": None}})
+
+        with patch.object(self.trial, "stage"), patch.object(self.trial, "check_idle"), \
+                patch.object(trial_module, "load_checkpoint", return_value=(saved, self.digest)), \
+                patch.object(trial_module, "ActorCritic"), \
+                patch.object(trial_module, "RunningNorm", return_value=normalizer), \
+                patch.object(trial_module, "ExternalEnvPool") as pool, \
+                patch.object(trial_module, "evaluate_pool", side_effect=evaluate):
+            summary = self.trial.evaluate(self.trial.source, "fixed_150")
+        args = pool.call_args.args
+        self.assertEqual((args[3], args[7]), (150, 60))
+        self.assertEqual((summary["episode_time_limit"], summary["observation_time_limit"]), (150, 60))
+        self.assertEqual(summary["episodes"], 40)
+        pool.return_value.close.assert_called_once()
 
     def test_exit_error_never_proceeds_to_checkpoint_or_evaluation(self):
         self.trial.prepare()

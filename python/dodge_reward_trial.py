@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import statistics
@@ -58,16 +59,24 @@ def normalization_fingerprint(value):
 
 
 class DodgeRewardTrial:
-    def __init__(self, directory, source, digest, entropy, endpoints, stopped=lambda: False):
+    def __init__(self, directory, source, digest, entropy, endpoints, stopped=lambda: False,
+                 episode_time_limit=150.0):
         if len(endpoints) != 4 or len(set(endpoints)) != 4:
             raise ValueError("The paired trial requires four distinct endpoints")
         if entropy not in (0.005, 0.001):
             raise ValueError("Unexpected entropy coefficient")
+        try:
+            duration = float(episode_time_limit)
+        except (TypeError, ValueError):
+            raise ValueError("Episode time limit must be finite and positive") from None
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("Episode time limit must be finite and positive")
         self.directory = Path(directory).resolve()
         self.original_source = Path(source).resolve()
         self.source = self.original_source
         self.digest = digest
         self.entropy = entropy
+        self.episode_time_limit = duration
         self.endpoint_names = list(endpoints)
         self.endpoints = [(item.rsplit(":", 1)[0], int(item.rsplit(":", 1)[1]))
                           for item in endpoints]
@@ -122,6 +131,7 @@ class DodgeRewardTrial:
             "updates_per_branch": UPDATES, "transitions_per_branch": UPDATES * STEPS_PER_ENV * 4,
             "episodes_per_assessment": 40, "control_profile": CONTROL_PROFILE,
             "candidate_profile": DODGE_PROFILE, "evaluation_profile": CONTROL_PROFILE,
+            "episode_time_limit": self.episode_time_limit, "observation_time_limit": 60.0,
             "candidate_reward": asdict(get_reward_config(DODGE_PROFILE)),
             "screen_extra_wins": 4, "confirmation_extra_wins": 2,
             "maximum_hp_regression": 65,
@@ -142,7 +152,7 @@ class DodgeRewardTrial:
         arguments += ["--run-dir", str(run), "--init-checkpoint", str(self.source),
                       "--action-distribution", "exclusive_directions_spells_v1",
                       "--reward-profile", profile, "--boss-level", "2",
-                      "--eval-objective", "nohit", "--episode-time-limit", "120",
+                      "--eval-objective", "nohit", "--episode-time-limit", str(self.episode_time_limit),
                       "--observation-time-limit", "60", "--control-hz", "10",
                       "--frame-stack", "4", "--game-speed", "1", "--seed", "42",
                       "--torch-threads", "2", "--lr", "0.0001", "--ent-coef", str(self.entropy),
@@ -178,6 +188,8 @@ class DodgeRewardTrial:
                 or config.get("ent_coef") != self.entropy or config.get("lr") != 0.0001
                 or config.get("reward_profile") != profile
                 or config.get("reward_config") != asdict(get_reward_config(profile))
+                or config.get("episode_time_limit") != self.episode_time_limit
+                or config.get("observation_time_limit") != 60
                 or not final.get("freeze_obs_norm")
                 or normalization_fingerprint(final.get("obs_norm")) != normalization_fingerprint(saved["obs_norm"])):
             raise RuntimeError(f"Wrong branch budget/settings: {label}")
@@ -206,7 +218,7 @@ class DodgeRewardTrial:
         started = time.monotonic()
         try:
             self.check_idle()
-            pool = ExternalEnvPool(self.endpoints, 10, saved["frame_stack"], 120.0,
+            pool = ExternalEnvPool(self.endpoints, 10, saved["frame_stack"], self.episode_time_limit,
                                    1.0, CONTROL_PROFILE, 2, 60.0, "exclusive_directions_spells_v1")
 
             def record(result):
@@ -246,6 +258,7 @@ class DodgeRewardTrial:
             "mean_hits": statistics.mean(item["info"]["hits"] for item in results),
             "timeouts": sum(item["info"].get("truncated_reason") == "timeout" for item in results),
             "evaluation_reward_profile": CONTROL_PROFILE, "elapsed_seconds": time.monotonic() - started,
+            "episode_time_limit": self.episode_time_limit, "observation_time_limit": 60.0,
         }
         write_json(self.directory / f"{label}_summary.json", summary)
         self.progress["evaluations"].append(summary)

@@ -18,6 +18,9 @@ class AutoContinueTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        root_patch = patch.object(auto, "ROOT", self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
         self.directory = self.root / "experiment"
         (self.directory / "backup").mkdir(parents=True)
         (self.root / "python/runs/traitor_4env_iframes_fixed").mkdir(parents=True)
@@ -42,7 +45,8 @@ class AutoContinueTests(unittest.TestCase):
         })
         self.baseline = {"label": "baseline_425", "valid": True, "episodes": 40,
                          "nohit_wins": 0, "win_rate": 0, "mean_min_boss_hp": 541,
-                         "checkpoint_sha256": self.digest}
+                         "checkpoint_sha256": self.digest, "episode_time_limit": 150,
+                         "observation_time_limit": 60}
         auto.write_json(self.directory / "backup/best_eval.json", {"selection_score": [0, .05, -434, -8.55, 0]})
         (self.directory / "baseline_425_fights.jsonl").write_text(
             "\n".join(json.dumps({"info": {"damage": 9, "won": False, "episode_damage": 9,
@@ -87,8 +91,20 @@ class AutoContinueTests(unittest.TestCase):
         self.assertEqual(args[args.index("--lr") + 1], "0.0001")
         self.assertEqual(args[args.index("--eval-every") + 1], "25")
         self.assertEqual(args[args.index("--total-updates") + 1], "10000")
+        self.assertEqual(float(args[args.index("--episode-time-limit") + 1]), 150)
+        self.assertEqual(args[args.index("--observation-time-limit") + 1], "60")
         self.assertEqual(json.loads((training / "best_eval.json").read_text())["selection_score"], [0, 0, -541, -9, 0])
         self.assertTrue((envelope / "backup/source_425.pth").exists())
+
+    def test_120_second_source_score_is_preserved_without_seeding_150_second_comparison(self):
+        supervisor = auto.Supervisor(self.directory, episode_time_limit=150)
+        _, training, args = supervisor.prepare(self.source, self.digest, .005, "longer horizon",
+                                               {"baseline": dict(self.baseline, episode_time_limit=120)})
+        self.assertFalse((training / "best_eval.json").exists())
+        self.assertTrue((training / "best_eval_checkpoint.pth").exists())
+        preserved = json.loads((training.parent / "backup/source_assessment.json").read_text())
+        self.assertEqual(preserved["episode_time_limit"], 120)
+        self.assertEqual(float(args[args.index("--episode-time-limit") + 1]), 150)
 
     def test_stop_sentinel_never_starts_or_queries_a_trainer(self):
         (self.directory / "STOP_AUTO_CONTINUE").touch()
@@ -96,6 +112,40 @@ class AutoContinueTests(unittest.TestCase):
             auto.Supervisor(self.directory).run()
         launch.assert_not_called()
         query.assert_not_called()
+
+    def test_explicit_reward_continuation_preserves_full_source_without_repeating_selection(self):
+        config = dict(self.saved["training_config"], ent_coef=.005, lr=.0001, episode_time_limit=150)
+        torch.save(dict(self.saved, training_config=config), self.source)
+        original = self.source.read_bytes()
+        child = MagicMock(pid=1234)
+        child.poll.return_value = 0
+        child.wait.return_value = 0
+        with patch.object(auto, "live_trainers", return_value=[]), patch.object(auto.time, "sleep"), \
+                patch.object(auto.Supervisor, "stage"), patch.object(auto, "choose_checkpoint") as choose, \
+                patch.object(auto.subprocess, "Popen", return_value=child) as launch:
+            auto.Supervisor(self.directory, continue_checkpoint=self.source,
+                            reward_profile="radiant_spells_dodge_v1").run()
+        choose.assert_not_called()
+        args = launch.call_args.args[0]
+        self.assertEqual(args[args.index("--reward-profile") + 1], "radiant_spells_dodge_v1")
+        self.assertEqual(Path(args[args.index("--init-checkpoint") + 1]).read_bytes(), original)
+        decision = json.loads((self.directory / "continuation_decision.json").read_text())
+        self.assertTrue(decision["user_requested_reward_override"])
+        training = Path(decision["training_directory"])
+        self.assertFalse((training / "best_eval.json").exists())
+        self.assertFalse((training / "best_eval_checkpoint.pth").exists())
+
+    def test_reward_change_cannot_be_silently_applied_during_preparation(self):
+        supervisor = auto.Supervisor(self.directory)
+        supervisor.continuation_profile = "radiant_spells_dodge_v1"
+        with self.assertRaisesRegex(ValueError, "explicit direct-continuation authorization"):
+            supervisor.prepare(self.source, self.digest, .005, "unexpected", None)
+
+    def test_direct_reward_override_cannot_be_combined_with_automatic_reward_trial(self):
+        with self.assertRaisesRegex(ValueError, "does not rerun"):
+            auto.Supervisor(self.directory, continue_checkpoint=self.source, dodge_trial=True)
+        with self.assertRaisesRegex(ValueError, "requires --continue-checkpoint"):
+            auto.Supervisor(self.directory, reward_profile="radiant_spells_dodge_v1")
 
     def test_unconfirmed_dodge_trial_cannot_change_continuation_reward(self):
         from dodge_reward_trial import DodgeRewardTrial
