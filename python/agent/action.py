@@ -393,26 +393,59 @@ def is_attack_action(action):
 
 BUTTON_ORDER = ("left", "right", "up", "down", "attack", "jump", "dash")
 NUM_BUTTONS = len(BUTTON_ORDER)
+SPELL_ACTION_NAMES = BUTTON_ORDER + ("spell",)
+NUM_SPELL_ACTIONS = len(SPELL_ACTION_NAMES)
+SPELL_CHOICES = ("none", "shade_soul", "abyss_shriek", "descending_dark")
 
 HELD_BUTTONS = frozenset({"left", "right", "up", "down", "jump"})
 TAP_BUTTONS = frozenset({"attack", "dash"})
 
 
-def execute_buttons(buttons, prev_buttons=None):
-    """Apply a multi-binary button vector and return the new previous state.
+def requested_spell(buttons, prev_buttons=None):
+    """Return this decision's spell request; previous choices do not gate it.
 
-    ``buttons`` is a length-``NUM_BUTTONS`` sequence of 0/1 aligned with
-    ``BUTTON_ORDER``. ``prev_buttons`` is the vector from the previous step
-    (or None on the first step) and is used only to detect press/release edges.
+    Spell environments run at at most 10 Hz and 1x speed, leaving a release
+    interval between the ordinary 60 ms quick-cast taps.
     """
-    if len(buttons) != NUM_BUTTONS:
-        raise ValueError(f"expected {NUM_BUTTONS} buttons, got {len(buttons)}")
+    if len(buttons) != NUM_SPELL_ACTIONS:
+        return 0
+    spell = buttons[NUM_BUTTONS]
+    return int(spell) if spell else 0
+
+
+def execute_buttons(buttons, prev_buttons=None):
+    """Apply seven buttons plus an optional categorical spell request.
+
+    Legacy vectors contain seven binary buttons. Eight-value spell policies
+    append 0 (none), 1 (Shade Soul), 2 (Abyss Shriek), or 3 (Descending Dark).
+    Each nonzero spell choice temporarily chooses its own vertical aim, independent of the
+    policy's nail aim. Return the actual held directions so the next decision
+    restores them correctly. The game decides whether a request can execute;
+    this function does not manufacture SOUL or bypass animation/cooldown rules.
+    Repeating a nonzero choice sends another request at the next decision.
+    Choose zero to resume the policy's normal vertical aim. There is no hidden
+    previous-choice gate that could permanently suppress a retry after a
+    request rejected by the game's SOUL or cooldown rules.
+    """
+    if len(buttons) not in (NUM_BUTTONS, NUM_SPELL_ACTIONS):
+        raise ValueError(f"expected {NUM_BUTTONS} or {NUM_SPELL_ACTIONS} actions, got {len(buttons)}")
+    if any(value not in (0, 1) for value in buttons[:NUM_BUTTONS]):
+        raise ValueError("the first seven button actions must be binary")
     if (buttons[0] and buttons[1]) or (buttons[2] and buttons[3]):
         raise ValueError("opposing directions cannot be pressed together")
+    spell = buttons[NUM_BUTTONS] if len(buttons) == NUM_SPELL_ACTIONS else 0
+    if spell not in (0, 1, 2, 3):
+        raise ValueError("spell choice must be 0, 1, 2, or 3")
+    effective = list(buttons)
+    spell_request = requested_spell(buttons, prev_buttons)
+    if spell_request:
+        effective[2], effective[3] = int(spell_request == 2), int(spell_request == 3)
     if prev_buttons is None:
-        prev_buttons = [0] * NUM_BUTTONS
+        prev_buttons = [0] * len(buttons)
+    elif len(prev_buttons) not in (NUM_BUTTONS, NUM_SPELL_ACTIONS):
+        raise ValueError("previous action must have seven or eight values")
     for index, name in enumerate(BUTTON_ORDER):
-        on = bool(buttons[index])
+        on = bool(effective[index])
         was_on = bool(prev_buttons[index])
         if name == "attack":
             if on:
@@ -425,4 +458,6 @@ def execute_buttons(buttons, prev_buttons=None):
                 controls.key_down(name)
             elif not on and was_on:
                 controls.key_up(name)
-    return list(buttons)
+    if spell_request:
+        controls.tap("quick_cast")
+    return effective

@@ -48,5 +48,11 @@
     "checkpoint_unchanged": true,
     "normalizer_unchanged": true,
     "purpose": "Functional smoke test, stopped after first flawless win; not a win-rate estimate."
+  },
+  "source_loadout": {
+    "nail_damage": 33,
+    "combat_charms": [],
+    "void_heart": true,
+    "warning": "Historical training used a modified 33-base-damage save. Prior victories are not evidence of standard 21-damage performance."
   }
 }

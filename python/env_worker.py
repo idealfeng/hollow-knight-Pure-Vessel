@@ -12,7 +12,7 @@ import traceback
 
 def env_worker_main(connection, host, port, control_hz, frame_stack,
                     episode_time_limit, game_speed, reward_profile="victory_v1", boss_level=None,
-                    observation_time_limit=None):
+                    observation_time_limit=None, action_distribution="exclusive_directions_v1"):
     host = str(host)
     port = int(port)
     os.environ["HOLLOWRL_HOST"] = host
@@ -67,6 +67,7 @@ def env_worker_main(connection, host, port, control_hz, frame_stack,
             reward_profile=reward_profile,
             boss_level=boss_level,
             observation_time_limit=observation_time_limit,
+            action_distribution=action_distribution,
         )
         connection.send((True, {
             "event": "ready", "host": host, "port": port,

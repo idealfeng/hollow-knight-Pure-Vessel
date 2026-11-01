@@ -9,7 +9,7 @@ from pathlib import Path
 
 from policy_runtime import ROOT, load_checkpoint, stage_fresh_fight
 import torch
-from agent.action import BUTTON_ORDER, NUM_BUTTONS
+from agent.action import BUTTON_ORDER, NUM_BUTTONS, SPELL_ACTION_NAMES
 from evaluation import evaluate_pool
 from main_multi import CHECKPOINT_FORMAT, ExternalEnvPool, prepare_fight
 from obs_norm import RunningNorm
@@ -26,16 +26,20 @@ def main():
     parser.add_argument("--port", type=int, default=9001)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--reward-profile", default=None)
     args = parser.parse_args()
     if args.episodes < 1 or not 1 <= args.port <= 65535:
         parser.error("episodes must be positive and port must be valid")
     saved, digest = load_checkpoint(args.checkpoint)
-    if (saved.get("format_version") != CHECKPOINT_FORMAT
-            or saved.get("action_distribution") != "exclusive_directions_v1"
-            or saved.get("action_names") != list(BUTTON_ORDER)):
+    spells = saved.get("action_distribution") == "exclusive_directions_spells_v1"
+    action_names = SPELL_ACTION_NAMES if spells else BUTTON_ORDER
+    action_sizes = [1] * NUM_BUTTONS + [4] if spells else [1] * NUM_BUTTONS
+    if (saved.get("format_version") != (9 if spells else CHECKPOINT_FORMAT)
+            or saved.get("action_distribution") not in ("exclusive_directions_v1", "exclusive_directions_spells_v1")
+            or saved.get("action_names") != list(action_names)):
         raise ValueError("Checkpoint does not match the current button policy")
     torch.set_num_threads(2)
-    model = ActorCritic(saved["observation_size"], [1] * NUM_BUTTONS,
+    model = ActorCritic(saved["observation_size"], action_sizes,
                         hidden=saved["model_hidden"], bernoulli=True,
                         exclusive_directions=True)
     model.load_state_dict(saved["model"])
@@ -50,7 +54,10 @@ def main():
         "game_speed": 1.0, "episode_time_limit": 120.0,
         "observation_time_limit": 60.0, "action_selection": "greedy",
         "control_hz": int(saved.get("control_hz", 10)),
+        "action_distribution": saved["action_distribution"],
     }
+    reward_profile = args.reward_profile or ("radiant_spells_v1" if spells else "radiant_spacing_v1")
+    provenance["reward_profile"] = reward_profile
     print(json.dumps(provenance), flush=True)
     if args.check_only:
         print("Checkpoint and normalizer loaded. No game connection made.", flush=True)
@@ -67,9 +74,11 @@ def main():
     try:
         stage_fresh_fight(endpoint, 2)
         prepare_fight(*endpoint)
+        pool_options = {"observation_time_limit": 60.0}
+        if spells:
+            pool_options["action_distribution"] = saved["action_distribution"]
         pool = ExternalEnvPool([endpoint], provenance["control_hz"], saved["frame_stack"],
-                               120.0, 1.0, "radiant_spacing_v1", 2,
-                               observation_time_limit=60.0)
+                               120.0, 1.0, reward_profile, 2, **pool_options)
         with torch.inference_mode():
             for episode in range(1, args.episodes + 1):
                 def record(result):

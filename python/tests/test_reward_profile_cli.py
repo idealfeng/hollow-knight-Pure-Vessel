@@ -22,6 +22,10 @@ class RewardProfileCliTests(unittest.TestCase):
                     ["main_multi.py"] + (["--reward-profile", profile] if profile else [])):
                 self.assertEqual(parse_args().reward_profile, profile)
 
+    def test_phase_dodge_profile_can_fork_a_new_run(self):
+        with patch.object(sys, "argv", ["main_multi.py", "--reward-profile", "radiant_spells_dodge_v1"]):
+            self.assertEqual(parse_args().reward_profile, "radiant_spells_dodge_v1")
+
 
 if __name__ == "__main__":
     unittest.main()

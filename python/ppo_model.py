@@ -15,16 +15,22 @@ class ActorCritic(nn.Module):
  
     def __init__(self, state_size, action_sizes, hidden=128, bernoulli=False,
                  exclusive_directions=False):
-        """``action_sizes`` is kept generic. With ``bernoulli=True`` each head
-        is one Bernoulli logit (multi-binary button actions); otherwise each
-        head is a categorical over ``n`` discrete choices."""
+        """Button heads are Bernoulli; an optional final head selects a spell.
+
+        The spell extension keeps the original seven button heads and appends
+        one categorical choice: none, Shade Soul, Abyss Shriek, Descending Dark.
+        Other non-Bernoulli models retain categorical heads throughout.
+        """
         super().__init__()
 
         self.bernoulli = bool(bernoulli)
         self.exclusive_directions = bool(exclusive_directions)
-        if self.exclusive_directions and (not self.bernoulli or len(action_sizes) != 7
-                                          or any(size != 1 for size in action_sizes)):
-            raise ValueError("exclusive directions require seven Bernoulli button heads")
+        action_sizes = list(action_sizes)
+        self.has_spell_head = self.bernoulli and action_sizes == [1] * 7 + [4]
+        legacy_buttons = self.bernoulli and action_sizes == [1] * 7
+        if self.exclusive_directions and not (legacy_buttons or self.has_spell_head):
+            raise ValueError("exclusive directions require seven Bernoulli button heads "
+                             "and optionally one four-choice spell head")
 
         self.trunk = nn.Sequential(
             _orthogonal(nn.Linear(state_size, hidden), 2 ** 0.5),
@@ -94,8 +100,9 @@ class ActorCritic(nn.Module):
                 actions.extend((int((choice == 1).item()), int((choice == 2).item())))
                 logprobs.extend((dist.log_prob(choice).item(), 0.0))
             start = 4
-        for logits in logits_list[start:]:
-            if self.bernoulli:
+        for index in range(start, len(logits_list)):
+            logits = logits_list[index]
+            if self.bernoulli and not (self.has_spell_head and index == 7):
                 dist = Bernoulli(logits=logits)
             else:
                 dist = Categorical(logits=logits)
@@ -115,9 +122,14 @@ class ActorCritic(nn.Module):
             for first, second in ((0, 1), (2, 3)):
                 choice = self._direction_dist(logits_list[first], logits_list[second]).probs.argmax(dim=-1)
                 actions.extend((int((choice == 1).item()), int((choice == 2).item())))
-            actions.extend(int((logits > 0).long().item()) for logits in logits_list[4:])
+            actions.extend(int((logits > 0).long().item()) for logits in logits_list[4:7])
+            if self.has_spell_head:
+                actions.append(int(logits_list[7].argmax(dim=-1).item()))
             return tuple(actions)
         if self.bernoulli:
+            if self.has_spell_head:
+                return tuple(int((logits > 0).long().item()) for logits in logits_list[:7]) + (
+                    int(logits_list[7].argmax(dim=-1).item()),)
             return tuple(int((logits > 0).long().item()) for logits in logits_list)
         return tuple(int(torch.argmax(logits, dim=-1).item()) for logits in logits_list)
  
@@ -154,7 +166,7 @@ class ActorCritic(nn.Module):
             start = 4
         for i in range(start, len(logits_list)):
             logits = logits_list[i]
-            if self.bernoulli:
+            if self.bernoulli and not (self.has_spell_head and i == 7):
                 dist = Bernoulli(logits=logits)
                 a_i = action_batch[:, i].float().unsqueeze(-1)
                 logprobs.append(dist.log_prob(a_i).squeeze(-1))

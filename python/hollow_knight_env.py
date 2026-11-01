@@ -16,7 +16,7 @@ import numpy as np
 import controls
 import game_state
 import fight_reset
-from agent.action import NUM_BUTTONS, execute_buttons
+from agent.action import NUM_BUTTONS, NUM_SPELL_ACTIONS, SPELL_CHOICES, execute_buttons, requested_spell
 from agent.reward import RewardTracker, get_reward_config
 from injury_context import combat_context
 from combat_trace import CombatTrace
@@ -66,7 +66,7 @@ class HollowKnightEnv(gym.Env):
                  frame_stack=DEFAULT_FRAME_STACK,
                  episode_time_limit=DEFAULT_TIME_LIMIT,
                  reuse_live_fight=False, reward_profile="victory_v1", boss_level=None,
-                 observation_time_limit=None):
+                 observation_time_limit=None, action_distribution="exclusive_directions_v1"):
         super().__init__()
         self.control_hz = int(control_hz)
         if self.control_hz <= 0:
@@ -88,7 +88,17 @@ class HollowKnightEnv(gym.Env):
             raise ValueError("boss level must be 0, 1, or 2")
 
         self.stacker = FrameStacker(OBSERVATION_SIZE, int(frame_stack))
-        self.action_space = gym.spaces.MultiBinary(NUM_BUTTONS)
+        self.action_distribution = action_distribution
+        if action_distribution == "exclusive_directions_v1":
+            self.action_space = gym.spaces.MultiBinary(NUM_BUTTONS)
+            self.action_count = NUM_BUTTONS
+        elif action_distribution == "exclusive_directions_spells_v1":
+            if self.control_hz > 10:
+                raise ValueError("spell policies require control_hz <= 10 and 1x game speed")
+            self.action_space = gym.spaces.MultiDiscrete([2] * NUM_BUTTONS + [4])
+            self.action_count = NUM_SPELL_ACTIONS
+        else:
+            raise ValueError(f"unknown action distribution: {action_distribution!r}")
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -103,6 +113,8 @@ class HollowKnightEnv(gym.Env):
         self.state = None
         self.raw_observation = None
         self.prev_buttons = None
+        self.spell_requests = {name: 0 for name in SPELL_CHOICES[1:]}
+        self.soul_spent = 0.0
         self.episode_steps = 0
         self.min_boss_hp = None
         self._has_reset_once = False
@@ -186,6 +198,8 @@ class HollowKnightEnv(gym.Env):
             "reset_count": self.reset_count,
             "reset_mode": self.last_reset_mode,
             "boss_level": self.boss_level,
+            "spell_requests": dict(self.spell_requests),
+            "soul_spent": self.soul_spent,
         }
         if include_damage_events:
             info["damage_events"] = list(self.damage_events)
@@ -283,6 +297,8 @@ class HollowKnightEnv(gym.Env):
         self.min_boss_hp = state["boss_health"]
         self.reward_tracker.reset()
         self.prev_buttons = None
+        self.spell_requests = {name: 0 for name in SPELL_CHOICES[1:]}
+        self.soul_spent = 0.0
         self._has_reset_once = True
         self.damage_events.clear()
         self.recent_context.clear()
@@ -298,6 +314,8 @@ class HollowKnightEnv(gym.Env):
     def step(self, action):
         if self.state is None:
             raise RuntimeError("call reset() before step()")
+        if len(action) != self.action_count:
+            raise ValueError(f"expected {self.action_count} actions, got {len(action)}")
 
         if self._wait_while_paused():
             state, raw = self._read()
@@ -310,6 +328,9 @@ class HollowKnightEnv(gym.Env):
         self.recent_context.append(combat_context(previous, self.episode_steps, action))
         step_started = time.perf_counter()
         self.prev_buttons = execute_buttons(action, self.prev_buttons)
+        spell = requested_spell(action, previous_buttons)
+        if spell:
+            self.spell_requests[SPELL_CHOICES[spell]] += 1
         action_seconds = time.perf_counter() - step_started
 
         next_step = self.episode_steps + 1
@@ -369,6 +390,9 @@ class HollowKnightEnv(gym.Env):
 
         self.episode_steps = next_step
         self.state = current
+        # Observed net SOUL loss is diagnostic only. Simultaneous nail hits can
+        # replenish SOUL, so it is not an exact count of successful casts.
+        self.soul_spent += max(float(previous.get("mana", 0)) - float(current.get("mana", 0)), 0.0)
         self.raw_observation = raw
         if current.get("boss_health", -1) >= 0:
             self.min_boss_hp = min(self.min_boss_hp, current["boss_health"])

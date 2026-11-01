@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from agent.action import BUTTON_ORDER, NUM_BUTTONS, is_intro_state
+from agent.action import BUTTON_ORDER, NUM_BUTTONS, SPELL_ACTION_NAMES, is_intro_state
 from agent.reward import get_reward_config
 from endpoints import resolve_endpoints
 from evaluation import evaluate_pool, interrupt_episode_stats
@@ -35,6 +35,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_FORMAT = 8
 MODEL_HIDDEN = 256
 ACTION_SIZES = [1] * NUM_BUTTONS
+LEGACY_DISTRIBUTION = "exclusive_directions_v1"
+SPELL_DISTRIBUTION = "exclusive_directions_spells_v1"
 
 GAMMA = 0.9955
 GAE_LAMBDA = 0.95
@@ -56,7 +58,7 @@ class ExternalEnvPool:
 
     def __init__(self, endpoints, control_hz, frame_stack, episode_time_limit,
                  game_speed, reward_profile="victory_v1", boss_level=None,
-                 observation_time_limit=None):
+                 observation_time_limit=None, action_distribution=LEGACY_DISTRIBUTION):
         context = mp.get_context("spawn")
         self.endpoints = [(str(host), int(port)) for host, port in endpoints]
         self.ports = tuple(port for _, port in self.endpoints)
@@ -71,7 +73,7 @@ class ExternalEnvPool:
                 target=env_worker_main,
                 args=(child, host, port, control_hz, frame_stack,
                       episode_time_limit, game_speed, reward_profile, boss_level,
-                      observation_time_limit),
+                      observation_time_limit, action_distribution),
                 name=f"HollowRL-env-{host}-{port}",
                 daemon=True,
             )
@@ -328,9 +330,11 @@ def parse_args():
                         help=f"entropy bonus coefficient (default {ENT_COEF:g})")
     parser.add_argument("--train-mode", choices=("all", "dash_only"), default=None,
                         help="parameter update scope; existing runs inherit their saved mode")
+    parser.add_argument("--action-distribution", choices=(LEGACY_DISTRIBUTION, SPELL_DISTRIBUTION), default=None,
+                        help="existing runs/initial checkpoints inherit their action schema")
     parser.add_argument("--eval-every", type=int, default=0,
                         help="run fixed greedy evaluation every N updates; 0 disables")
-    parser.add_argument("--reward-profile", choices=("victory_v1", "nohit_v1", "radiant_spacing_v1", "radiant_wave_clear_v1"), default=None,
+    parser.add_argument("--reward-profile", choices=("victory_v1", "nohit_v1", "radiant_spacing_v1", "radiant_wave_clear_v1", "radiant_spells_v1", "radiant_spells_dodge_v1"), default=None,
                         help="new-run reward profile; existing runs inherit their saved profile")
     parser.add_argument("--eval-objective", choices=("victory", "nohit"), default=None,
                         help="new-run selection objective; existing runs inherit their saved objective")
@@ -409,12 +413,23 @@ def main():
             previous_config = torch.load(checkpoint_path, map_location="cpu", weights_only=False).get("training_config", {})
     for field, default in (("reward_profile", "victory_v1"), ("eval_objective", "victory"),
                            ("boss_level", None), ("observation_time_limit", None),
-                           ("train_mode", "all")):
+                           ("train_mode", "all"), ("action_distribution", LEGACY_DISTRIBUTION)):
         requested = getattr(args, field)
         saved_value = previous_config.get(field, default)
+        if field == "action_distribution" and not os.path.isfile(checkpoint_path) and args.init_checkpoint:
+            saved_value = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False).get(field, default)
         if os.path.isfile(checkpoint_path) and requested is not None and requested != saved_value:
             raise SystemExit(f"Cannot change {field} inside an existing run; fork with --init-checkpoint and a new --run-dir")
         setattr(args, field, requested if requested is not None else saved_value)
+
+    with_spells = args.action_distribution == SPELL_DISTRIBUTION
+    action_names = SPELL_ACTION_NAMES if with_spells else BUTTON_ORDER
+    action_sizes = [1] * NUM_BUTTONS + [4] if with_spells else ACTION_SIZES
+    checkpoint_format = 9 if with_spells else CHECKPOINT_FORMAT
+    if with_spells and args.train_mode != "all":
+        raise SystemExit("Spell policies require --train-mode all")
+    if with_spells and (args.control_hz > 10 or args.game_speed != 1.0):
+        raise SystemExit("Spell policies currently require <=10 Hz and 1x speed so each quick-cast tap has a release interval")
 
     print(
         f"starting {num_envs} environments on "
@@ -428,7 +443,7 @@ def main():
     pool = ExternalEnvPool(
         endpoints, args.control_hz, args.frame_stack,
         args.episode_time_limit, args.game_speed, args.reward_profile, args.boss_level,
-        args.observation_time_limit,
+        args.observation_time_limit, args.action_distribution,
     )
 
     # Reset concurrently.  Waiting for replies in index order does not make
@@ -450,12 +465,12 @@ def main():
         pool.close()
         raise RuntimeError("environment observation shapes do not match")
 
-    model = ActorCritic(state_size, ACTION_SIZES, hidden=MODEL_HIDDEN,
+    model = ActorCritic(state_size, action_sizes, hidden=MODEL_HIDDEN,
                         bernoulli=True, exclusive_directions=True)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     obs_norm = RunningNorm(state_size)
     buffer = VectorRolloutBuffer(
-        steps_per_env, num_envs, state_size, num_action_heads=NUM_BUTTONS
+        steps_per_env, num_envs, state_size, num_action_heads=len(action_names)
     )
 
     start_update = 0
@@ -478,17 +493,18 @@ def main():
     if init_source is not None:
         checkpoint = torch.load(init_source, map_location="cpu", weights_only=False)
         expected = {
-            "format_version": CHECKPOINT_FORMAT,
+            "format_version": checkpoint_format,
             "observation_size": state_size,
             "frame_stack": args.frame_stack,
-            "action_names": list(BUTTON_ORDER),
+            "action_names": list(action_names),
+            "action_sizes": action_sizes,
             "model_hidden": MODEL_HIDDEN,
             # num_envs is intentionally NOT validated: the BC checkpoint records
             # the environment count it was created with (e.g. 2), but the model
             # weights and observation normalizer are independent of that count,
             # so the same checkpoint can seed a run with a different number of
             # environments.
-            "action_distribution": "exclusive_directions_v1",
+            "action_distribution": args.action_distribution,
         }
         mismatches = [
             f"{key}: checkpoint={checkpoint.get(key)!r}, expected={wanted!r}"
@@ -501,7 +517,11 @@ def main():
                 + "\n  ".join(mismatches)
             )
         model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        if "optimizer" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        elif resumed or not checkpoint.get("initialization_only", False):
+            pool.close()
+            raise SystemExit("Checkpoint has no optimizer; use the explicit policy migration initializer for a new run")
         obs_norm.load_state_dict(checkpoint["obs_norm"])
         freeze_obs_norm = freeze_obs_norm or checkpoint.get("freeze_obs_norm", False)
         pretraining = checkpoint.get("pretraining")
@@ -514,7 +534,7 @@ def main():
     # parameter groups retain the checkpoint layout; frozen gradients remain
     # None, so old optimizer moments cannot move the preserved parameters.
     trainable_parameter_names = model.configure_trainable_parameters(args.train_mode)
-    trainable_action_heads = [6] if args.train_mode == "dash_only" else list(range(NUM_BUTTONS))
+    trainable_action_heads = [6] if args.train_mode == "dash_only" else list(range(len(action_names)))
     print(f"training mode: {args.train_mode}; trainable parameters: "
           f"{', '.join(trainable_parameter_names)}", flush=True)
 
@@ -534,9 +554,8 @@ def main():
         try:
             monitor = TrainingMonitor(
                 target_kl=TARGET_KL,
-                action_sizes=[3, 1, 3, 1, 2, 2, 2],
-                action_labels=["left", "right", "up", "down",
-                               "attack", "jump", "dash"],
+                action_sizes=[3, 1, 3, 1, 2, 2, 2] + ([4] if with_spells else []),
+                action_labels=list(action_names),
                 history_path=history_path,
             )
         except Exception as exc:
@@ -564,7 +583,8 @@ def main():
         **vars(args), "endpoints": [f"{host}:{port}" for host, port in endpoints],
         "steps_per_env": steps_per_env, "num_envs": num_envs,
         "batch_size": steps_per_env * num_envs, "observation_size": state_size,
-        "format_version": CHECKPOINT_FORMAT, "init_source": init_source,
+        "format_version": checkpoint_format, "init_source": init_source,
+        "action_names": list(action_names), "action_sizes": action_sizes,
         "freeze_obs_norm": freeze_obs_norm, "start_update": start_update,
         "gamma": GAMMA, "gae_lambda": GAE_LAMBDA, "clip_eps": CLIP_EPS,
         "target_kl": TARGET_KL, "epochs": EPOCHS,
@@ -681,7 +701,7 @@ def main():
             "event": "episode", "episode": episode,
             "global_step": global_step, "env": env_index,
             "reward": episode_rewards[env_index], "steps": episode_steps[env_index],
-            "actions": {name: episode_actions[env_index][name] for name in BUTTON_ORDER},
+            "actions": dict(episode_actions[env_index]),
             "reward_parts": dict(episode_reward_parts[env_index]),
         })
         print(
@@ -698,14 +718,14 @@ def main():
 
     def save_checkpoint(update, destination=None, evaluation=None):
         checkpoint = {
-            "format_version": CHECKPOINT_FORMAT,
+            "format_version": checkpoint_format,
             "observation_size": state_size,
             "frame_stack": args.frame_stack,
-            "action_names": list(BUTTON_ORDER),
-            "action_sizes": ACTION_SIZES,
+            "action_names": list(action_names),
+            "action_sizes": action_sizes,
             "model_hidden": MODEL_HIDDEN,
             "num_envs": num_envs,
-            "action_distribution": "exclusive_directions_v1",
+            "action_distribution": args.action_distribution,
             "ports": list(ports),
             "endpoints": [f"{host}:{port}" for host, port in endpoints],
             "training_config": run_config,
@@ -810,9 +830,12 @@ def main():
                         global_step += 1
                         episode_rewards[env_index] += reward
                         episode_steps[env_index] += 1
-                        for index, name in enumerate(BUTTON_ORDER):
+                        for index, name in enumerate(action_names):
                             if meta["action"][index]:
                                 episode_actions[env_index][name] += 1
+                        if with_spells and meta["action"][-1]:
+                            spell_name = ("none", "shade_soul", "abyss_shriek", "descending_dark")[meta["action"][-1]]
+                            episode_actions[env_index][spell_name] += 1
                         episode_reward_parts[env_index].update(info.get("reward_parts", {}))
 
                         if done:

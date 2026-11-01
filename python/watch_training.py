@@ -3,10 +3,22 @@ import argparse
 import json
 from pathlib import Path
 
-from monitor import TrainingMonitor
+from monitor import TrainingMonitor, max_entropy
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTIVE = ROOT / "python/runs/traitor_4env_iframes_fixed/active_experiment.json"
+
+
+def action_layout(run_dir):
+    """Reload the schema even if the trainer writes its config after the UI starts."""
+    try:
+        config = json.loads((Path(run_dir) / "run_config.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        config = {}
+    spells = config.get("action_distribution") == "exclusive_directions_spells_v1"
+    labels = ["left", "right", "up", "down", "attack", "jump", "dash"]
+    sizes = [3, 1, 3, 1, 2, 2, 2]
+    return labels + (["spell"] if spells else []), sizes + ([4] if spells else [])
 
 
 class JsonlTail:
@@ -59,7 +71,9 @@ class ReadOnlyMonitor(TrainingMonitor):
         pass
 
     def __init__(self, run_dir=None):
-        super().__init__(action_labels=["left", "right", "up", "down", "attack", "jump", "dash"])
+        selected = Path(run_dir).resolve() if run_dir else active_run()[0]
+        labels, sizes = action_layout(selected)
+        super().__init__(action_labels=labels, action_sizes=sizes)
         self.fixed_run = Path(run_dir).resolve() if run_dir else None
         self.tail = None
         self.root.title("PPO Training Monitor — read only")
@@ -67,6 +81,11 @@ class ReadOnlyMonitor(TrainingMonitor):
 
     def poll(self):
         run_dir, phase = (self.fixed_run, "live") if self.fixed_run else active_run()
+        labels, sizes = action_layout(run_dir)
+        if sizes != self.action_sizes:
+            self.action_labels, self.action_sizes = labels, sizes
+            self.num_heads = len(sizes)
+            self.max_entropy = max_entropy(sizes)
         path = run_dir / "training_metrics.jsonl"
         if self.tail is None or self.tail.path != path:
             self.tail = JsonlTail(path)

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import time
 
-from agent.action import boss_move, boss_phase
+from agent.action import boss_move, boss_phase, requested_spell
 
 
 def trace_state(state):
@@ -13,6 +13,7 @@ def trace_state(state):
         "health": int(state.get("knight_health", 0)),
         "damage_count": int(state.get("damage_count", 0)),
         "hit_count": int(state.get("hit_count", 0)),
+        "mana": float(state.get("mana", 0.0)),
         "boss_health": int(state.get("boss_health", -1)),
         "boss_fsm": state.get("boss_control_state", ""),
         "boss_move": boss_move(state).name,
@@ -20,6 +21,9 @@ def trace_state(state):
         "boss_state_age": float(state.get("boss_state_age", 0.0)),
         "shade_ready": bool(state.get("can_shade_cloak_now", False)),
         "dashing": bool(state.get("is_dashing", False)),
+        "attacking": bool(state.get("attacking", False)),
+        "recoiling": bool(state.get("is_recoiling", False)),
+        "on_ground": bool(state.get("is_on_ground", False)),
         "invulnerable": bool(state.get("is_invuln", False)),
         "knight_box": list(state["knight_box"]) if state.get("knight_box") is not None else None,
         "boss_box": list(state["boss_box"]) if state.get("boss_box") is not None else None,
@@ -73,6 +77,7 @@ class CombatTrace:
                      "elapsed_wall_seconds": time.monotonic() - self.started,
                      "action": buttons, "previous_action": previous_buttons,
                      "dash_pressed": bool(buttons[6] and not previous_buttons[6]),
+                     "spell_requested": requested_spell(buttons, previous_buttons),
                      "before": trace_state(previous), "after": trace_state(current),
                      "reward": float(reward), "reward_parts": dict(reward_parts),
                      "terminated": bool(terminated), "truncated": bool(truncated),
