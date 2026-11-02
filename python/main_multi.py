@@ -10,6 +10,7 @@ import multiprocessing as mp
 from multiprocessing.connection import wait
 import os
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -18,7 +19,9 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from agent.action import BUTTON_ORDER, NUM_BUTTONS, SPELL_ACTION_NAMES, is_intro_state
+from agent.action import BUTTON_ORDER, NUM_BUTTONS, SPELL_ACTION_NAMES, EXECUTION_PROFILES, is_intro_state
+from macro_actions import (MACRO_ACTIONS, MACRO_ACTION_NAMES, MACRO_DISTRIBUTION,
+                           MACRO_EXECUTION_PROFILE, macro_metadata, validate_macro_checkpoint)
 from agent.reward import get_reward_config
 from observation_schema import LEGACY_SCHEMA, COMBAT_SCHEMA
 from endpoints import resolve_endpoints
@@ -60,7 +63,7 @@ class ExternalEnvPool:
     def __init__(self, endpoints, control_hz, frame_stack, episode_time_limit,
                  game_speed, reward_profile="victory_v1", boss_level=None,
                  observation_time_limit=None, action_distribution=LEGACY_DISTRIBUTION,
-                 observation_schema=LEGACY_SCHEMA):
+                 observation_schema=LEGACY_SCHEMA, execution_profile="legacy_v1"):
         context = mp.get_context("spawn")
         self.endpoints = [(str(host), int(port)) for host, port in endpoints]
         self.ports = tuple(port for _, port in self.endpoints)
@@ -75,7 +78,7 @@ class ExternalEnvPool:
                 target=env_worker_main,
                 args=(child, host, port, control_hz, frame_stack,
                       episode_time_limit, game_speed, reward_profile, boss_level,
-                      observation_time_limit, action_distribution, observation_schema),
+                      observation_time_limit, action_distribution, observation_schema, execution_profile),
                 name=f"HollowRL-env-{host}-{port}",
                 daemon=True,
             )
@@ -332,10 +335,12 @@ def parse_args():
                         help=f"entropy bonus coefficient (default {ENT_COEF:g})")
     parser.add_argument("--train-mode", choices=("all", "dash_only"), default=None,
                         help="parameter update scope; existing runs inherit their saved mode")
-    parser.add_argument("--action-distribution", choices=(LEGACY_DISTRIBUTION, SPELL_DISTRIBUTION), default=None,
+    parser.add_argument("--action-distribution", choices=(LEGACY_DISTRIBUTION, SPELL_DISTRIBUTION, MACRO_DISTRIBUTION), default=None,
                         help="existing runs/initial checkpoints inherit their action schema")
     parser.add_argument("--observation-schema", choices=(LEGACY_SCHEMA, COMBAT_SCHEMA), default=None,
                         help="combat_v2 appends measured dash protection and cooldown states")
+    parser.add_argument("--execution-profile", choices=EXECUTION_PROFILES, default=None,
+                        help="input dispatch rules; defaults to the checkpoint profile or conservative legacy_v1")
     parser.add_argument("--eval-every", type=int, default=0,
                         help="run fixed greedy evaluation every N updates; 0 disables")
     parser.add_argument("--reward-profile", choices=("victory_v1", "nohit_v1", "radiant_spacing_v1", "radiant_wave_clear_v1", "radiant_spells_v1", "radiant_spells_dodge_v1", "radiant_potential_v1"), default=None,
@@ -418,28 +423,55 @@ def main():
     for field, default in (("reward_profile", "victory_v1"), ("eval_objective", "victory"),
                            ("boss_level", None), ("observation_time_limit", None),
                            ("train_mode", "all"), ("action_distribution", LEGACY_DISTRIBUTION),
-                           ("observation_schema", LEGACY_SCHEMA)):
+                           ("observation_schema", LEGACY_SCHEMA), ("execution_profile", "legacy_v1")):
         requested = getattr(args, field)
+        if field == "execution_profile" and args.action_distribution == MACRO_DISTRIBUTION:
+            default = MACRO_EXECUTION_PROFILE
         saved_value = previous_config.get(field, default)
-        if field in ("action_distribution", "observation_schema") and not os.path.isfile(checkpoint_path) and args.init_checkpoint:
-            saved_value = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False).get(field, default)
+        if field in ("action_distribution", "observation_schema", "execution_profile") and not os.path.isfile(checkpoint_path) and args.init_checkpoint:
+            initial = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
+            saved_value = initial.get(field, initial.get("training_config", {}).get(field, default))
+            if field == "execution_profile" and initial.get("action_distribution") == MACRO_DISTRIBUTION:
+                saved_value = initial.get(field, initial.get("training_config", {}).get(field, MACRO_EXECUTION_PROFILE))
+        elif not os.path.isfile(checkpoint_path) and args.init_checkpoint:
+            initial = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
+            if initial.get("action_distribution") == MACRO_DISTRIBUTION:
+                saved_value = initial.get("training_config", {}).get(field, default)
         if os.path.isfile(checkpoint_path) and requested is not None and requested != saved_value:
             raise SystemExit(f"Cannot change {field} inside an existing run; fork with --init-checkpoint and a new --run-dir")
         setattr(args, field, requested if requested is not None else saved_value)
 
     with_spells = args.action_distribution == SPELL_DISTRIBUTION
-    action_names = SPELL_ACTION_NAMES if with_spells else BUTTON_ORDER
-    action_sizes = [1] * NUM_BUTTONS + [4] if with_spells else ACTION_SIZES
-    checkpoint_format = 9 if with_spells else CHECKPOINT_FORMAT
-    if with_spells and args.train_mode != "all":
+    with_macros = args.action_distribution == MACRO_DISTRIBUTION
+    if with_macros and not any(value == "--frame-stack" or value.startswith("--frame-stack=") for value in sys.argv[1:]):
+        initial_path = checkpoint_path if os.path.isfile(checkpoint_path) else args.init_checkpoint
+        args.frame_stack = (torch.load(initial_path, map_location="cpu", weights_only=False).get("frame_stack", 16)
+                            if initial_path else 16)
+    action_names = ("macro",) if with_macros else SPELL_ACTION_NAMES if with_spells else BUTTON_ORDER
+    action_sizes = [len(MACRO_ACTIONS)] if with_macros else [1] * NUM_BUTTONS + [4] if with_spells else ACTION_SIZES
+    checkpoint_format = 10 if with_macros else 9 if with_spells else CHECKPOINT_FORMAT
+    if with_macros and (args.observation_schema != LEGACY_SCHEMA or args.frame_stack != 16):
+        raise SystemExit("Macro policies require legacy_v1 observations with 16 stacked frames")
+    if with_macros and get_reward_config(args.reward_profile).nail_damage_reference != 21.0:
+        raise SystemExit("Macro policies require a 21-damage reward reference; use --reward-profile radiant_spells_dodge_v1")
+    if (with_spells or with_macros) and args.train_mode != "all":
         raise SystemExit("Spell policies require --train-mode all")
-    if with_spells and (args.control_hz > 10 or args.game_speed != 1.0):
+    if (with_spells or with_macros) and (args.control_hz > 10 or args.game_speed != 1.0):
         raise SystemExit("Spell policies currently require <=10 Hz and 1x speed so each quick-cast tap has a release interval")
     if args.reward_profile == "radiant_potential_v1":
         if args.observation_schema != COMBAT_SCHEMA or not with_spells:
             raise SystemExit("Potential training requires a migrated combat_v2 spell checkpoint")
         if get_reward_config(args.reward_profile).potential.gamma != GAMMA:
             raise SystemExit("Potential shaping and PPO must use the same discount factor")
+    if with_macros:
+        initial_path = checkpoint_path if os.path.isfile(checkpoint_path) else args.init_checkpoint
+        if initial_path:
+            source = torch.load(initial_path, map_location="cpu", weights_only=False)
+            validate_macro_checkpoint(source)
+            if (source.get("observation_schema", LEGACY_SCHEMA) != LEGACY_SCHEMA
+                    or source.get("observation_size") != 1888 or source.get("frame_stack") != 16
+                    or source.get("execution_profile", MACRO_EXECUTION_PROFILE) != args.execution_profile):
+                raise SystemExit("Macro checkpoint observation/execution schema differs from this run")
 
     print(
         f"starting {num_envs} environments on "
@@ -452,6 +484,8 @@ def main():
 
     pool_options = ({"observation_schema": args.observation_schema}
                     if args.observation_schema != LEGACY_SCHEMA else {})
+    if args.execution_profile != "legacy_v1":
+        pool_options["execution_profile"] = args.execution_profile
     pool = ExternalEnvPool(
         endpoints, args.control_hz, args.frame_stack,
         args.episode_time_limit, args.game_speed, args.reward_profile, args.boss_level,
@@ -473,12 +507,15 @@ def main():
         raise
 
     state_size = int(np.asarray(raw_observations[0]).shape[0])
+    if with_macros and state_size != 1888:
+        pool.close()
+        raise RuntimeError("Macro observations must contain 16 legacy frames (1888 features)")
     if any(np.asarray(obs).shape != (state_size,) for obs in raw_observations):
         pool.close()
         raise RuntimeError("environment observation shapes do not match")
 
     model = ActorCritic(state_size, action_sizes, hidden=MODEL_HIDDEN,
-                        bernoulli=True, exclusive_directions=True)
+                        bernoulli=not with_macros, exclusive_directions=not with_macros)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     obs_norm = RunningNorm(state_size)
     buffer = VectorRolloutBuffer(
@@ -504,6 +541,12 @@ def main():
 
     if init_source is not None:
         checkpoint = torch.load(init_source, map_location="cpu", weights_only=False)
+        if with_macros:
+            try:
+                validate_macro_checkpoint(checkpoint)
+            except ValueError:
+                pool.close()
+                raise
         if checkpoint.get("observation_schema", LEGACY_SCHEMA) != args.observation_schema:
             pool.close()
             raise SystemExit("Checkpoint observation schema differs; migrate before starting a new schema")
@@ -521,6 +564,9 @@ def main():
             # environments.
             "action_distribution": args.action_distribution,
         }
+        if with_macros:
+            expected.update(macro_metadata())
+            expected["execution_profile"] = args.execution_profile
         mismatches = [
             f"{key}: checkpoint={checkpoint.get(key)!r}, expected={wanted!r}"
             for key, wanted in expected.items() if checkpoint.get(key) != wanted
@@ -569,7 +615,7 @@ def main():
         try:
             monitor = TrainingMonitor(
                 target_kl=TARGET_KL,
-                action_sizes=[3, 1, 3, 1, 2, 2, 2] + ([4] if with_spells else []),
+                action_sizes=action_sizes if with_macros else [3, 1, 3, 1, 2, 2, 2] + ([4] if with_spells else []),
                 action_labels=list(action_names),
                 history_path=history_path,
             )
@@ -609,7 +655,8 @@ def main():
         "reward_config": asdict(get_reward_config(args.reward_profile)),
         "trainable_parameter_names": trainable_parameter_names,
         "trainable_action_heads": trainable_action_heads,
-        "action_sampling": "original_all_heads_stochastic",
+        "action_sampling": "categorical_macro_stochastic" if with_macros else "original_all_heads_stochastic",
+        **(macro_metadata() if with_macros else {}),
     }
     with open(os.path.join(run_dir, "run_config.json"), "w", encoding="utf-8") as stream:
         json.dump(run_config, stream, indent=2)
@@ -742,6 +789,8 @@ def main():
             "num_envs": num_envs,
             "action_distribution": args.action_distribution,
             "observation_schema": args.observation_schema,
+            "execution_profile": args.execution_profile,
+            **(macro_metadata() if with_macros else {}),
             "ports": list(ports),
             "endpoints": [f"{host}:{port}" for host, port in endpoints],
             "training_config": run_config,
@@ -846,9 +895,12 @@ def main():
                         global_step += 1
                         episode_rewards[env_index] += reward
                         episode_steps[env_index] += 1
-                        for index, name in enumerate(action_names):
-                            if meta["action"][index]:
-                                episode_actions[env_index][name] += 1
+                        if with_macros:
+                            episode_actions[env_index][MACRO_ACTION_NAMES[meta["action"][0]]] += 1
+                        else:
+                            for index, name in enumerate(action_names):
+                                if meta["action"][index]:
+                                    episode_actions[env_index][name] += 1
                         if with_spells and meta["action"][-1]:
                             spell_name = ("none", "shade_soul", "abyss_shriek", "descending_dark")[meta["action"][-1]]
                             episode_actions[env_index][spell_name] += 1

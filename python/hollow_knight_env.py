@@ -5,7 +5,7 @@ start each worker with a distinct ``HOLLOWRL_PORT`` before importing this
 module; the matching game process/mod must use the same port.
 """
 
-from collections import deque
+from collections import Counter, deque
 import math
 import os
 import time
@@ -16,7 +16,9 @@ import numpy as np
 import controls
 import game_state
 import fight_reset
-from agent.action import NUM_BUTTONS, NUM_SPELL_ACTIONS, SPELL_CHOICES, execute_buttons, requested_spell
+from agent.action import (NUM_BUTTONS, NUM_SPELL_ACTIONS, SPELL_CHOICES,
+                          EXECUTION_PROFILES, describe_execution, execute_buttons, requested_spell)
+from macro_actions import MACRO_ACTIONS, MACRO_ACTION_NAMES, MACRO_DISTRIBUTION, decode_macro
 from agent.reward import RewardTracker, get_reward_config
 from injury_context import combat_context
 from combat_trace import CombatTrace
@@ -68,7 +70,7 @@ class HollowKnightEnv(gym.Env):
                  episode_time_limit=DEFAULT_TIME_LIMIT,
                  reuse_live_fight=False, reward_profile="victory_v1", boss_level=None,
                  observation_time_limit=None, action_distribution="exclusive_directions_v1",
-                 observation_schema=LEGACY_SCHEMA):
+                 observation_schema=LEGACY_SCHEMA, execution_profile="legacy_v1"):
         super().__init__()
         self.control_hz = int(control_hz)
         if self.control_hz <= 0:
@@ -90,6 +92,9 @@ class HollowKnightEnv(gym.Env):
             raise ValueError("boss level must be 0, 1, or 2")
 
         self.observation_schema = observation_schema
+        if execution_profile not in EXECUTION_PROFILES:
+            raise ValueError(f"unknown execution profile: {execution_profile!r}")
+        self.execution_profile = execution_profile
         self.stacker = FrameStacker(observation_width(observation_schema), int(frame_stack))
         if reward_profile == "radiant_potential_v1" and observation_schema != COMBAT_SCHEMA:
             raise ValueError("The potential objective requires combat_v2 and verified dash telemetry")
@@ -102,6 +107,15 @@ class HollowKnightEnv(gym.Env):
                 raise ValueError("spell policies require control_hz <= 10 and 1x game speed")
             self.action_space = gym.spaces.MultiDiscrete([2] * NUM_BUTTONS + [4])
             self.action_count = NUM_SPELL_ACTIONS
+        elif action_distribution == MACRO_DISTRIBUTION:
+            if self.control_hz > 10:
+                raise ValueError("macro spell policies require control_hz <= 10 and 1x game speed")
+            if observation_schema != LEGACY_SCHEMA or int(frame_stack) != 16:
+                raise ValueError("macro policies require legacy_v1 observations stacked over 16 frames")
+            if reward_profile == "radiant_potential_v1":
+                raise ValueError("macro policies do not enable potential shaping")
+            self.action_space = gym.spaces.Discrete(len(MACRO_ACTIONS))
+            self.action_count = 1
         else:
             raise ValueError(f"unknown action distribution: {action_distribution!r}")
         self.observation_space = gym.spaces.Box(
@@ -120,6 +134,11 @@ class HollowKnightEnv(gym.Env):
         self.prev_buttons = None
         self.spell_requests = {name: 0 for name in SPELL_CHOICES[1:]}
         self.soul_spent = 0.0
+        self.execution_counts = Counter()
+        self.last_execution_plan = None
+        self.macro_counts = Counter()
+        self.last_macro_id = None
+        self.last_macro_name = None
         self.episode_steps = 0
         self.min_boss_hp = None
         self._has_reset_once = False
@@ -211,6 +230,15 @@ class HollowKnightEnv(gym.Env):
             "spell_requests": dict(self.spell_requests),
             "soul_spent": self.soul_spent,
             "observation_schema": self.observation_schema,
+            "action_distribution": self.action_distribution,
+            "execution_profile": self.execution_profile,
+            "execution_counts": dict(self.execution_counts),
+            "execution_plan": self.last_execution_plan,
+            "macro_counts": dict(self.macro_counts),
+            "macro_id": self.last_macro_id,
+            "macro_name": self.last_macro_name,
+            "decoded_buttons": (self.last_execution_plan["requested_buttons"]
+                                if self.last_execution_plan is not None else None),
             "potential_applied_steps": self.reward_tracker.potential_applied_steps,
             "potential_invalid_steps": self.reward_tracker.potential_invalid_steps,
         }
@@ -312,6 +340,10 @@ class HollowKnightEnv(gym.Env):
         self.prev_buttons = None
         self.spell_requests = {name: 0 for name in SPELL_CHOICES[1:]}
         self.soul_spent = 0.0
+        self.execution_counts.clear()
+        self.last_execution_plan = None
+        self.macro_counts.clear()
+        self.last_macro_id = self.last_macro_name = None
         self._has_reset_once = True
         self.damage_events.clear()
         self.recent_context.clear()
@@ -327,7 +359,19 @@ class HollowKnightEnv(gym.Env):
     def step(self, action):
         if self.state is None:
             raise RuntimeError("call reset() before step()")
-        if len(action) != self.action_count:
+        if self.action_distribution == MACRO_DISTRIBUTION:
+            value = action
+            if isinstance(value, (tuple, list, np.ndarray)):
+                if np.asarray(value).shape != (1,):
+                    raise ValueError("macro action must be an integer or a one-element action tuple")
+                value = value[0]
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+                raise ValueError("macro action index must be an integer")
+            action = decode_macro(int(value))
+            self.last_macro_id = int(value)
+            self.last_macro_name = MACRO_ACTION_NAMES[self.last_macro_id]
+            self.macro_counts[self.last_macro_name] += 1
+        elif len(action) != self.action_count:
             raise ValueError(f"expected {self.action_count} actions, got {len(action)}")
 
         if self._wait_while_paused():
@@ -340,7 +384,23 @@ class HollowKnightEnv(gym.Env):
         previous_buttons = self.prev_buttons
         self.recent_context.append(combat_context(previous, self.episode_steps, action))
         step_started = time.perf_counter()
-        self.prev_buttons = execute_buttons(action, self.prev_buttons)
+        self.last_execution_plan = describe_execution(action, self.prev_buttons,
+                                                     execution_profile=self.execution_profile,
+                                                     mana=previous.get("mana", 0))
+        plan = self.last_execution_plan
+        self.execution_counts["dash_requests"] += bool(action[6])
+        self.execution_counts["dash_taps"] += bool(plan["dash_tap"])
+        self.execution_counts["dash_held_suppressed"] += plan["dash_gate_reason"] == "held_without_new_edge"
+        self.execution_counts["spell_requests"] += bool(plan["spell_requested"])
+        self.execution_counts["spell_taps"] += bool(plan["spell_sent"])
+        self.execution_counts["spell_soul_suppressed"] += plan["spell_gate_reason"] == "soul_below_33"
+        self.execution_counts["spell_aim_overrides"] += bool(plan["aim_overridden"])
+        if self.execution_profile == "legacy_v1":
+            self.prev_buttons = execute_buttons(action, self.prev_buttons)
+        else:
+            self.prev_buttons = execute_buttons(action, self.prev_buttons,
+                                                execution_profile=self.execution_profile,
+                                                mana=previous.get("mana", 0))
         spell = requested_spell(action, previous_buttons)
         if spell:
             self.spell_requests[SPELL_CHOICES[spell]] += 1
@@ -417,10 +477,14 @@ class HollowKnightEnv(gym.Env):
         info["action_wall_seconds"] = action_seconds
         info["step_wall_seconds"] = time.perf_counter() - step_started
         if self.combat_trace is not None:
+            trace_options = {}
+            if self.action_distribution == MACRO_DISTRIBUTION or self.execution_profile != "legacy_v1":
+                trace_options = {"execution_plan": self.last_execution_plan,
+                                 "macro_id": self.last_macro_id, "macro_name": self.last_macro_name}
             self.combat_trace.transition(
                 previous, current, action, previous_buttons, step=next_step, reward=reward,
                 reward_parts=self.reward_tracker.last_breakdown, terminated=terminated,
-                truncated=truncated, won=won, truncated_reason=reason)
+                truncated=truncated, won=won, truncated_reason=reason, **trace_options)
         return stacked, reward, terminated, truncated, info
 
     def close(self):

@@ -9,6 +9,7 @@ Two halves:
 """
 
 from enum import IntEnum
+import math
 import controls
 import game_state
 class movement:
@@ -399,6 +400,8 @@ SPELL_CHOICES = ("none", "shade_soul", "abyss_shriek", "descending_dark")
 
 HELD_BUTTONS = frozenset({"left", "right", "up", "down", "jump"})
 TAP_BUTTONS = frozenset({"attack", "dash"})
+EXECUTION_PROFILES = ("legacy_v1", "repeat_dash_v1", "soul_guard_v1")
+QUICK_CAST_SOUL_COST = 33.0
 
 
 def requested_spell(buttons, prev_buttons=None):
@@ -413,20 +416,10 @@ def requested_spell(buttons, prev_buttons=None):
     return int(spell) if spell else 0
 
 
-def execute_buttons(buttons, prev_buttons=None):
-    """Apply seven buttons plus an optional categorical spell request.
-
-    Legacy vectors contain seven binary buttons. Eight-value spell policies
-    append 0 (none), 1 (Shade Soul), 2 (Abyss Shriek), or 3 (Descending Dark).
-    Each nonzero spell choice temporarily chooses its own vertical aim, independent of the
-    policy's nail aim. Return the actual held directions so the next decision
-    restores them correctly. The game decides whether a request can execute;
-    this function does not manufacture SOUL or bypass animation/cooldown rules.
-    Repeating a nonzero choice sends another request at the next decision.
-    Choose zero to resume the policy's normal vertical aim. There is no hidden
-    previous-choice gate that could permanently suppress a retry after a
-    request rejected by the game's SOUL or cooldown rules.
-    """
+def _execution_plan(buttons, prev_buttons, execution_profile, mana):
+    """Pure shared decision plan; no input or game-state reads occur here."""
+    if execution_profile not in EXECUTION_PROFILES:
+        raise ValueError(f"unknown execution profile: {execution_profile!r}")
     if len(buttons) not in (NUM_BUTTONS, NUM_SPELL_ACTIONS):
         raise ValueError(f"expected {NUM_BUTTONS} or {NUM_SPELL_ACTIONS} actions, got {len(buttons)}")
     if any(value not in (0, 1) for value in buttons[:NUM_BUTTONS]):
@@ -436,14 +429,83 @@ def execute_buttons(buttons, prev_buttons=None):
     spell = buttons[NUM_BUTTONS] if len(buttons) == NUM_SPELL_ACTIONS else 0
     if spell not in (0, 1, 2, 3):
         raise ValueError("spell choice must be 0, 1, 2, or 3")
+    if execution_profile == "soul_guard_v1":
+        try:
+            valid_mana = math.isfinite(mana) and mana >= 0
+        except (TypeError, ValueError):
+            valid_mana = False
+        if not valid_mana:
+            raise ValueError("soul_guard_v1 requires a finite non-negative mana value")
     effective = list(buttons)
     spell_request = requested_spell(buttons, prev_buttons)
-    if spell_request:
-        effective[2], effective[3] = int(spell_request == 2), int(spell_request == 3)
+    spell_sent = spell_request
+    if not spell_request:
+        spell_gate_reason = "not_requested"
+    elif execution_profile == "soul_guard_v1" and mana < QUICK_CAST_SOUL_COST:
+        spell_sent = 0
+        effective[NUM_BUTTONS] = 0
+        spell_gate_reason = "soul_below_33"
+    elif execution_profile == "soul_guard_v1":
+        spell_gate_reason = "soul_at_least_33"
+    else:
+        spell_gate_reason = "unfiltered_request"
+    if spell_sent:
+        effective[2], effective[3] = int(spell_sent == 2), int(spell_sent == 3)
     if prev_buttons is None:
         prev_buttons = [0] * len(buttons)
     elif len(prev_buttons) not in (NUM_BUTTONS, NUM_SPELL_ACTIONS):
         raise ValueError("previous action must have seven or eight values")
+    dash_tap = bool(effective[6] and (execution_profile == "repeat_dash_v1" or not prev_buttons[6]))
+    if not effective[6]:
+        dash_gate_reason = "not_requested"
+    elif not prev_buttons[6]:
+        dash_gate_reason = "rising_edge"
+    elif execution_profile == "repeat_dash_v1":
+        dash_gate_reason = "repeated_request"
+    else:
+        dash_gate_reason = "held_without_new_edge"
+    return {
+        "execution_profile": execution_profile,
+        "requested_buttons": list(buttons),
+        "previous_effective_buttons": list(prev_buttons),
+        "effective_buttons": effective,
+        "dash_tap": dash_tap,
+        "spell_requested": spell_request,
+        "spell_sent": spell_sent,
+        "aim_overridden": bool(effective[2:4] != list(buttons[2:4])),
+        "dash_gate_reason": dash_gate_reason,
+        "spell_gate_reason": spell_gate_reason,
+    }
+
+
+def describe_execution(buttons, prev_buttons=None, execution_profile="legacy_v1", mana=None):
+    """Describe intended input dispatch as JSON data, without sending commands.
+
+    ``spell_requested`` is the policy choice; ``spell_sent`` is the quick-cast
+    choice after this profile's filtering. Neither confirms the game performed
+    the action. Pass the preceding execution's effective buttons as history.
+    """
+    plan = _execution_plan(buttons, prev_buttons, execution_profile, mana)
+    for key in ("requested_buttons", "previous_effective_buttons", "effective_buttons"):
+        plan[key] = [int(value) for value in plan[key]]
+    return plan
+
+
+def execute_buttons(buttons, prev_buttons=None, *, execution_profile="legacy_v1", mana=None):
+    """Apply seven buttons plus an optional categorical spell request.
+
+    The default preserves legacy input dispatch: repeated attack and quick-cast
+    taps, held movement/jump, and a dash tap only on a rising decision edge.
+    ``repeat_dash_v1`` instead taps dash on every selected decision, leaving
+    cooldowns to the game. ``soul_guard_v1`` keeps legacy dash dispatch but
+    suppresses both the cast and its aim override when supplied SOUL is below
+    33. It requires explicit mana and does not infer it from global game state.
+    Return effective buttons for correct held-direction restoration next time.
+    All profiles use ordinary inputs and retain the game's animation rules.
+    """
+    plan = _execution_plan(buttons, prev_buttons, execution_profile, mana)
+    effective = plan["effective_buttons"]
+    prev_buttons = plan["previous_effective_buttons"]
     for index, name in enumerate(BUTTON_ORDER):
         on = bool(effective[index])
         was_on = bool(prev_buttons[index])
@@ -451,13 +513,13 @@ def execute_buttons(buttons, prev_buttons=None):
             if on:
                 controls.tap(name)
         elif name == "dash":
-            if on and not was_on:
+            if plan["dash_tap"]:
                 controls.tap(name)
         else:
             if on and not was_on:
                 controls.key_down(name)
             elif not on and was_on:
                 controls.key_up(name)
-    if spell_request:
+    if plan["spell_sent"]:
         controls.tap("quick_cast")
     return effective

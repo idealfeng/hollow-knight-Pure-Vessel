@@ -70,22 +70,29 @@ class CombatTrace:
                      "step_dt": self.step_dt, "state": trace_state(state)})
 
     def transition(self, previous, current, action, previous_action, *, step,
-                   reward, reward_parts, terminated, truncated, won, truncated_reason):
+                   reward, reward_parts, terminated, truncated, won, truncated_reason,
+                   execution_plan=None, macro_id=None, macro_name=None):
         if self.stream is None:
             raise RuntimeError("Trace transition has no matching reset")
         buttons = [int(v) for v in action]
         previous_buttons = ([int(v) for v in previous_action]
                             if previous_action is not None else [0] * len(buttons))
-        self._write({"event": "transition", "step": int(step),
+        record = {"event": "transition", "step": int(step),
                      "elapsed_control_seconds": int(step) * self.step_dt,
                      "elapsed_wall_seconds": time.monotonic() - self.started,
                      "action": buttons, "previous_action": previous_buttons,
-                     "dash_pressed": bool(buttons[6] and not previous_buttons[6]),
+                     "dash_pressed": (bool(execution_plan["dash_tap"]) if execution_plan is not None
+                                      else bool(buttons[6] and not previous_buttons[6])),
                      "spell_requested": requested_spell(buttons, previous_buttons),
                      "before": trace_state(previous), "after": trace_state(current),
                      "reward": float(reward), "reward_parts": dict(reward_parts),
                      "terminated": bool(terminated), "truncated": bool(truncated),
-                     "won": bool(won), "truncated_reason": truncated_reason})
+                     "won": bool(won), "truncated_reason": truncated_reason}
+        if execution_plan is not None:
+            record["execution_plan"] = execution_plan
+        if macro_id is not None:
+            record.update(macro_id=int(macro_id), macro_name=str(macro_name))
+        self._write(record)
         if terminated or truncated:
             self.stream.close()
             self.stream = None

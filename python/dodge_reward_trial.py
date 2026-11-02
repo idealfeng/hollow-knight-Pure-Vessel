@@ -196,7 +196,8 @@ class DodgeRewardTrial:
             raise RuntimeError(f"Wrong branch budget/settings: {label}")
         return checkpoint
 
-    def evaluate(self, checkpoint, label):
+    def evaluate(self, checkpoint, label, *, execution_profile="legacy_v1",
+                 reward_profile=CONTROL_PROFILE):
         self.check_stop()
         saved, digest = load_checkpoint(checkpoint)
         model = ActorCritic(saved["observation_size"], saved["action_sizes"],
@@ -221,8 +222,10 @@ class DodgeRewardTrial:
             self.check_idle()
             options = ({"observation_schema": saved["observation_schema"]}
                        if saved.get("observation_schema", LEGACY_SCHEMA) != LEGACY_SCHEMA else {})
+            if execution_profile != "legacy_v1":
+                options["execution_profile"] = execution_profile
             pool = ExternalEnvPool(self.endpoints, 10, saved["frame_stack"], self.episode_time_limit,
-                                   1.0, CONTROL_PROFILE, 2, 60.0, "exclusive_directions_spells_v1", **options)
+                                   1.0, reward_profile, 2, 60.0, "exclusive_directions_spells_v1", **options)
 
             def record(result):
                 self.check_stop()
@@ -260,7 +263,8 @@ class DodgeRewardTrial:
             "mean_damage": statistics.mean(item["info"]["damage"] for item in results),
             "mean_hits": statistics.mean(item["info"]["hits"] for item in results),
             "timeouts": sum(item["info"].get("truncated_reason") == "timeout" for item in results),
-            "evaluation_reward_profile": CONTROL_PROFILE, "elapsed_seconds": time.monotonic() - started,
+            "evaluation_reward_profile": reward_profile, "execution_profile": execution_profile,
+            "elapsed_seconds": time.monotonic() - started,
             "episode_time_limit": self.episode_time_limit, "observation_time_limit": 60.0,
         }
         write_json(self.directory / f"{label}_summary.json", summary)

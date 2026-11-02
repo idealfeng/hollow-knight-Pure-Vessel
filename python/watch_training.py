@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from monitor import TrainingMonitor, max_entropy
+from macro_actions import MACRO_ACTIONS, MACRO_DISTRIBUTION
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTIVE = ROOT / "python/runs/traitor_4env_iframes_fixed/active_experiment.json"
@@ -15,6 +16,8 @@ def action_layout(run_dir):
         config = json.loads((Path(run_dir) / "run_config.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         config = {}
+    if config.get("action_distribution") == MACRO_DISTRIBUTION:
+        return ["macro"], [len(MACRO_ACTIONS)]
     spells = config.get("action_distribution") == "exclusive_directions_spells_v1"
     labels = ["left", "right", "up", "down", "attack", "jump", "dash"]
     sizes = [3, 1, 3, 1, 2, 2, 2]
