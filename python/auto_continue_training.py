@@ -23,6 +23,7 @@ from agent.action import SPELL_ACTION_NAMES
 from agent.reward import get_reward_config
 from policy_selection import is_flawless, nohit_selection_score
 from policy_runtime import stage_fresh_fight
+from observation_schema import LEGACY_SCHEMA, COMBAT_SCHEMA, observation_width
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,21 +86,31 @@ def choose_checkpoint(directory, selection=None):
 def verified_checkpoint(payload, reward_profile="radiant_spells_v1"):
     saved = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
     config = saved.get("training_config", {})
+    schema = saved.get("observation_schema", LEGACY_SCHEMA)
+    frame_stack = saved.get("frame_stack")
+    if not isinstance(frame_stack, int) or frame_stack not in (4, 16):
+        raise ValueError("Selected checkpoint must use the verified 4 or 16 frame stack")
+    expected_size = observation_width(schema) * frame_stack
     if (saved.get("format_version") != 9
             or saved.get("action_distribution") != "exclusive_directions_spells_v1"
             or saved.get("action_sizes") != [1] * 7 + [4]
             or saved.get("action_names") != list(SPELL_ACTION_NAMES)
-            or saved.get("observation_size") != 472
-            or saved.get("frame_stack") != 4 or saved.get("control_hz") != 10
+            or saved.get("observation_size") != expected_size
+            or config.get("observation_schema", schema) != schema
+            or config.get("frame_stack", frame_stack) != frame_stack
+            or config.get("observation_size", expected_size) != expected_size
+            or saved.get("control_hz") != 10
             or not saved.get("freeze_obs_norm")
             or "optimizer" not in saved
-            or reward_profile not in ("radiant_spells_v1", "radiant_spells_dodge_v1")
+            or reward_profile not in ("radiant_spells_v1", "radiant_spells_dodge_v1", "radiant_potential_v1")
             or config.get("reward_profile") != reward_profile
             or config.get("boss_level") != 2
             or config.get("reward_config") != asdict(get_reward_config(reward_profile))
             or config.get("episode_time_limit") not in (120, 150) or config.get("observation_time_limit") != 60
             or config.get("game_speed") != 1 or config.get("train_mode") != "all"):
         raise ValueError("Selected full checkpoint does not match the verified 21-damage spell run")
+    if reward_profile == "radiant_potential_v1" and schema != COMBAT_SCHEMA:
+        raise ValueError("Potential checkpoint requires combat_v2 observations")
     return saved
 
 
@@ -248,7 +259,7 @@ class Supervisor:
         arguments += ["--run-dir", str(training), "--init-checkpoint", str(initial),
                       "--action-distribution", "exclusive_directions_spells_v1", "--reward-profile", self.continuation_profile,
                       "--boss-level", "2", "--eval-objective", "nohit", "--episode-time-limit", str(self.episode_time_limit),
-                      "--observation-time-limit", "60", "--control-hz", "10", "--frame-stack", "4",
+                      "--observation-time-limit", "60", "--control-hz", "10", "--frame-stack", str(saved["frame_stack"]),
                       "--game-speed", "1", "--lr", "0.0001", "--ent-coef", str(entropy),
                       "--freeze-obs-norm", "--steps-per-env", "512", "--total-updates", str(self.total_updates),
                       "--eval-every", "25", "--eval-episodes", "10", "--no-monitor"]
@@ -452,7 +463,7 @@ def main():
                         help="after entropy comparison, test +0.1 per completed clean boss move before continuation")
     parser.add_argument("--continue-checkpoint", type=Path,
                         help="explicitly continue a backed-up full checkpoint instead of selecting from a completed comparison")
-    parser.add_argument("--reward-profile", choices=("radiant_spells_v1", "radiant_spells_dodge_v1"),
+    parser.add_argument("--reward-profile", choices=("radiant_spells_v1", "radiant_spells_dodge_v1", "radiant_potential_v1"),
                         help="user-requested reward for a new direct continuation; never changes an existing run in place")
     args = parser.parse_args()
     if args.poll_seconds < 5 or args.total_updates < 1 or not 0 <= args.max_restarts <= 3 or args.max_wait_hours <= 0:

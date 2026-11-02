@@ -3,6 +3,8 @@
 import game_state as game_reader
 from agent.action import boss_attack, boss_move, boss_phase, BossMove, BossPhase
 from agent.calc import box_center, box_distance
+from observation_schema import LEGACY_SCHEMA, COMBAT_SCHEMA, DASH_FEATURES, observation_width
+import math
 
 game_reader.start()
 
@@ -168,10 +170,11 @@ def get_state():
         "is_touching_wall_right": game_reader.is_touching_wall_right,
         "can_shade_cloak_now": game_reader.can_shade_cloak_now,
         "is_invuln": game_reader.is_invuln,
+        **{name: getattr(game_reader, name) for name in DASH_FEATURES},
     }
 
 
-def state_to_vector(state, time_frac=0.0):
+def state_to_vector(state, time_frac=0.0, schema=LEGACY_SCHEMA):
     """Build the 118-feature, mostly knight-relative boss state."""
     knight_box = state["knight_box"]
     if knight_box is None:
@@ -252,9 +255,18 @@ def state_to_vector(state, time_frac=0.0):
         *_hazard_features(knight_box, knight_velocity, hazards),
     ]
 
-    if len(vector) != OBSERVATION_SIZE:
+    if schema == COMBAT_SCHEMA:
+        if not state.get("dash_state_valid", False):
+            raise RuntimeError("combat_v2 requires the dash_v1 telemetry Mod on every game window")
+        values = [float(state[name]) for name in DASH_FEATURES]
+        if not all(math.isfinite(value) and value >= 0 for value in values):
+            raise RuntimeError("combat_v2 received invalid dash telemetry")
+        vector.extend(values)
+        vector.extend((knight_box[2] - knight_box[0], knight_box[3] - knight_box[1]))
+    expected_width = observation_width(schema)
+    if len(vector) != expected_width:
         raise RuntimeError(
-            f"observation width {len(vector)} != expected {OBSERVATION_SIZE}"
+            f"observation width {len(vector)} != expected {expected_width}"
         )
     return vector
 

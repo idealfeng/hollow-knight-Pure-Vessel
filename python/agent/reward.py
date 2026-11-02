@@ -5,12 +5,13 @@ small amount of history required to decide whether a nail swing really missed
 and whether an ACTIVE boss phase ended without damage.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 
 from agent.action import BossMove, BossPhase, boss_move, boss_phase, is_intro_state
 from agent.calc import box_distance
 from wave_clearance import WaveClearanceTracker, WaveFrontCriteria
+from combat_potential import PotentialConfig, potential_reward
 
 NAIL_DAMAGE_REFERENCE = 33.0
 HIT_REWARD_PER_NAIL = 1.0
@@ -81,6 +82,11 @@ class PhaseDodgeRewardConfig(RewardConfig):
     clean_dodge_version: str = "observed_move_completion_v1"
 
 
+@dataclass(frozen=True)
+class PotentialRewardConfig(PhaseDodgeRewardConfig):
+    potential: PotentialConfig = field(default_factory=PotentialConfig)
+
+
 _REWARD_CONFIGS = {
     "victory_v1": RewardConfig(),
     "nohit_v1": RewardConfig(profile="nohit_v1", damage_per_mask=6.0,
@@ -107,6 +113,12 @@ _REWARD_CONFIGS = {
         clean_dodge=0.1, empty_attack=-0.005,
         far_distance=5.0, far_full_distance=12.0,
         far_penalty_per_second=0.15, distance_hazard_exemption=6.0),
+    "radiant_potential_v1": PotentialRewardConfig(
+        profile="radiant_potential_v1", nail_damage_reference=21.0,
+        clean_dodge=0.1, empty_attack=-0.005,
+        far_distance=5.0, far_full_distance=12.0,
+        # The range potential replaces the old always-far distance cost.
+        far_penalty_per_second=0.0, distance_hazard_exemption=6.0),
 }
 
 
@@ -289,6 +301,8 @@ class RewardTracker:
         self._active_damage = None
         self._phase_dodge = None
         self.dodge_rewards = 0
+        self.potential_applied_steps = 0
+        self.potential_invalid_steps = 0
         self.misses = 0
         self.staggers = 0
         self.dodges = 0
@@ -525,6 +539,17 @@ class RewardTracker:
             successful_wave_spacing=successful_wave_spacing,
             successful_wave_clear=successful_wave_clear,
         )
+        if isinstance(self.reward_config, PotentialRewardConfig) and not self._episode_ended:
+            shaping = potential_reward(previous_state, current_state,
+                                       terminal=bool(done or timed_out or truncated),
+                                       config=self.reward_config.potential)
+            if shaping is None:
+                self.potential_invalid_steps += 1
+                raise RuntimeError("Potential training received invalid combat geometry/telemetry; refusing to drop a shaping transition")
+            else:
+                self.potential_applied_steps += 1
+                reward += shaping
+                self.last_breakdown.append(("potential shaping", shaping))
         if (done or truncated
                 or (isinstance(self.reward_config, PhaseDodgeRewardConfig) and timed_out)):
             self._episode_ended = True

@@ -17,6 +17,7 @@ from main_multi import CHECKPOINT_FORMAT, ExternalEnvPool, prepare_fight
 from obs_norm import RunningNorm
 from policy_selection import is_flawless
 from ppo_model import ActorCritic
+from observation_schema import LEGACY_SCHEMA
 
 
 DEFAULT_CHECKPOINT = ROOT / "models/traitor_lord_radiant.pth"
@@ -68,6 +69,7 @@ def main():
         "episodes_limit": args.episodes, "retry_until_flawless": args.episodes == 0,
         "control_hz": int(saved.get("control_hz", 10)),
         "action_distribution": saved["action_distribution"],
+        "observation_schema": saved.get("observation_schema", LEGACY_SCHEMA),
     }
     reward_profile = (args.reward_profile or training_config.get("reward_profile")
                       or ("radiant_spells_v1" if spells else "radiant_spacing_v1"))
@@ -91,6 +93,8 @@ def main():
         pool_options = {"observation_time_limit": observation_time_limit}
         if spells:
             pool_options["action_distribution"] = saved["action_distribution"]
+        if provenance["observation_schema"] != LEGACY_SCHEMA:
+            pool_options["observation_schema"] = provenance["observation_schema"]
         pool = ExternalEnvPool([endpoint], provenance["control_hz"], saved["frame_stack"],
                                episode_time_limit, 1.0, reward_profile, 2, **pool_options)
         with torch.inference_mode():

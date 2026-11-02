@@ -1,6 +1,7 @@
 """Offline checks for unattended continuation; no game/process access."""
 import hashlib
 from dataclasses import asdict
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -95,6 +96,74 @@ class AutoContinueTests(unittest.TestCase):
         self.assertEqual(args[args.index("--observation-time-limit") + 1], "60")
         self.assertEqual(json.loads((training / "best_eval.json").read_text())["selection_score"], [0, 0, -541, -9, 0])
         self.assertTrue((envelope / "backup/source_425.pth").exists())
+
+    def checkpoint_payload(self, checkpoint):
+        stream = io.BytesIO()
+        torch.save(checkpoint, stream)
+        return stream.getvalue()
+
+    def combat_checkpoint(self, frames=16, profile="radiant_spells_dodge_v1"):
+        config = dict(self.saved["training_config"], frame_stack=frames,
+                      observation_schema="combat_v2", observation_size=128 * frames,
+                      reward_profile=profile, reward_config=asdict(get_reward_config(profile)))
+        return dict(self.saved, frame_stack=frames, observation_schema="combat_v2",
+                    observation_size=128 * frames, training_config=config)
+
+    def test_verified_checkpoint_accepts_exact_schema_width_for_four_and_sixteen_frames(self):
+        for frames, profile in ((4, "radiant_spells_dodge_v1"),
+                                (16, "radiant_spells_dodge_v1"),
+                                (4, "radiant_potential_v1")):
+            with self.subTest(frames=frames, profile=profile):
+                checkpoint = self.combat_checkpoint(frames, profile)
+                actual = auto.verified_checkpoint(self.checkpoint_payload(checkpoint), profile)
+                self.assertEqual(actual["observation_size"], 128 * frames)
+        self.assertEqual(auto.verified_checkpoint(self.source.read_bytes())["observation_size"], 472)
+
+    def test_wrong_stack_width_or_conflicting_schema_is_rejected(self):
+        for overrides, config_overrides in (({"observation_size": 512}, {}),
+                                             ({"frame_stack": 8}, {}),
+                                             ({}, {"frame_stack": 4}),
+                                             ({}, {"observation_schema": "legacy_v1"}),
+                                             ({}, {"observation_size": 512})):
+            with self.subTest(overrides=overrides, config_overrides=config_overrides):
+                checkpoint = self.combat_checkpoint()
+                checkpoint.update(overrides)
+                checkpoint["training_config"].update(config_overrides)
+                with self.assertRaises(ValueError):
+                    auto.verified_checkpoint(self.checkpoint_payload(checkpoint), "radiant_spells_dodge_v1")
+
+    def test_preparation_inherits_sixteen_frames_without_changing_rewards_or_learning_rate(self):
+        source = self.directory / "combat16.pth"
+        source.write_bytes(self.checkpoint_payload(self.combat_checkpoint()))
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        supervisor = auto.Supervisor(self.directory, continue_checkpoint=source)
+        supervisor.continuation_profile = "radiant_spells_dodge_v1"
+        _, training, arguments = supervisor.prepare(source, digest, .005, "16 frame continuation", None)
+        self.assertEqual(arguments[arguments.index("--frame-stack") + 1], "16")
+        self.assertEqual(arguments[arguments.index("--reward-profile") + 1], "radiant_spells_dodge_v1")
+        self.assertEqual(arguments[arguments.index("--lr") + 1], "0.0001")
+        self.assertEqual((training.parent / "backup/source_425.pth").read_bytes(), source.read_bytes())
+
+    def test_legacy_sixteen_frames_accepts_1888_columns_without_combat_fields(self):
+        config = dict(self.saved["training_config"], frame_stack=16, observation_schema="legacy_v1",
+                      observation_size=1888, reward_profile="radiant_spells_dodge_v1",
+                      reward_config=asdict(get_reward_config("radiant_spells_dodge_v1")))
+        checkpoint = dict(self.saved, frame_stack=16, observation_schema="legacy_v1",
+                          observation_size=1888, training_config=config)
+        source = self.directory / "legacy16.pth"
+        source.write_bytes(self.checkpoint_payload(checkpoint))
+        verified = auto.verified_checkpoint(source.read_bytes(), "radiant_spells_dodge_v1")
+        self.assertEqual(verified["observation_schema"], "legacy_v1")
+        self.assertEqual(verified["observation_size"], 118 * 16)
+        supervisor = auto.Supervisor(self.directory, continue_checkpoint=source)
+        supervisor.continuation_profile = "radiant_spells_dodge_v1"
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        _, training, arguments = supervisor.prepare(source, digest, .005, "old features sixteen frames", None)
+        self.assertEqual(arguments[arguments.index("--frame-stack") + 1], "16")
+        self.assertEqual(arguments[arguments.index("--reward-profile") + 1], "radiant_spells_dodge_v1")
+        if "--observation-schema" in arguments:
+            self.assertEqual(arguments[arguments.index("--observation-schema") + 1], "legacy_v1")
+        self.assertEqual((training.parent / "backup/source_425.pth").read_bytes(), source.read_bytes())
 
     def test_120_second_source_score_is_preserved_without_seeding_150_second_comparison(self):
         supervisor = auto.Supervisor(self.directory, episode_time_limit=150)

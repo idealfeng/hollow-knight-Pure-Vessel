@@ -1,11 +1,24 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 
 
 namespace KnightPos
 {
+    public struct DashSnapshot
+    {
+        public bool Valid;
+        public bool CanDashNow;
+        public bool ShadowDashing;
+        public float ShadowCooldownRemaining;
+        public float ShadowDashRemaining;
+        public float DashRemaining;
+        public float InvulnerabilityRemaining;
+        public bool InvulnerabilityTimeValid;
+    }
+
     public struct HazardSnapshot
     {
         public int InstanceId;
@@ -15,10 +28,18 @@ namespace KnightPos
         public Bounds Box;
         public Vector2 Velocity;
         public bool BossAttached;
+        public int HazardType;
     }
 
     public class DiagnosticsOverlay : MonoBehaviour
     {
+        private static readonly MethodInfo CanDashMethod = AccessTools.Method(typeof(HeroController), "CanDash");
+        private static readonly FieldInfo ShadowCooldownField = AccessTools.Field(typeof(HeroController), "shadowDashTimer");
+        private static readonly FieldInfo DashTimerField = AccessTools.Field(typeof(HeroController), "dash_timer");
+        private static readonly FieldInfo DashTimeField = AccessTools.Field(typeof(HeroController), "DASH_TIME");
+        private static readonly FieldInfo InvulnerabilityRoutineField = AccessTools.Field(typeof(HeroController), "hazardInvulnRoutine");
+        private static readonly FieldInfo InvulnerabilityFreezeField = AccessTools.Field(typeof(HeroController), "invulnerableFreezeDuration");
+        private static readonly FieldInfo InvulnerabilityDurationField = AccessTools.Field(typeof(HeroController), "invulnerableDuration");
         // Default target boss. Overridable per game instance via
         // --hollowrl-boss-name= and --hollowrl-boss-scene= so switching bosses
         // (e.g. to Traitor Lord) does not require a recompile.
@@ -148,6 +169,62 @@ namespace KnightPos
             bool hasShadowDash = PlayerData.instance.GetBool("hasShadowDash");
             float shadowDashTimer = Traverse.Create(HeroController.instance).Field("shadowDashTimer").GetValue<float>();
             return hasShadowDash && shadowDashTimer <= 0f;
+        }
+
+        public DashSnapshot GetDashSnapshot()
+        {
+            HeroController hero = HeroController.instance;
+            if (hero == null || hero.cState == null || CanDashMethod == null
+                    || ShadowCooldownField == null || DashTimerField == null || DashTimeField == null
+                    || InvulnerabilityRoutineField == null || InvulnerabilityFreezeField == null
+                    || InvulnerabilityDurationField == null)
+                return new DashSnapshot();
+
+            try
+            {
+                // Audited against this game's IL: dash_timer increases until
+                // DASH_TIME, then CancelDash clears dashing and shadowDashing.
+                // shadowDashTimer is the separate recharge countdown.
+                float elapsed = (float)DashTimerField.GetValue(hero);
+                float duration = (float)DashTimeField.GetValue(hero);
+                float cooldown = (float)ShadowCooldownField.GetValue(hero);
+                float freeze = (float)InvulnerabilityFreezeField.GetValue(hero);
+                float invulnerability = (float)InvulnerabilityDurationField.GetValue(hero);
+                if (!Finite(elapsed) || !Finite(duration) || !Finite(cooldown)
+                        || !Finite(freeze) || !Finite(invulnerability) || duration <= 0f)
+                    return new DashSnapshot();
+
+                float remaining = hero.cState.dashing ? Mathf.Max(duration - elapsed, 0f) : 0f;
+                bool invulnerable = hero.cState.invulnerable;
+                bool timedRoutine = InvulnerabilityRoutineField.GetValue(hero) != null;
+                // The Invulnerable coroutine counts these two durations down
+                // in sequence. A spell/FSM may set invulnerable directly, so
+                // without this routine its remaining protection is UNKNOWN.
+                bool invulnerabilityTimeValid = !invulnerable || timedRoutine;
+                return new DashSnapshot
+                {
+                    Valid = true,
+                    CanDashNow = (bool)CanDashMethod.Invoke(hero, null),
+                    ShadowDashing = hero.cState.shadowDashing,
+                    ShadowCooldownRemaining = Mathf.Max(cooldown, 0f),
+                    ShadowDashRemaining = hero.cState.shadowDashing ? remaining : 0f,
+                    DashRemaining = remaining,
+                    InvulnerabilityRemaining = invulnerable && timedRoutine
+                        ? Mathf.Max(freeze, 0f) + Mathf.Max(invulnerability, 0f) : 0f,
+                    InvulnerabilityTimeValid = invulnerabilityTimeValid,
+                };
+            }
+            catch (Exception)
+            {
+                // Unknown game builds must fail closed, never advertise a
+                // guessed zero cooldown/remaining duration as valid telemetry.
+                return new DashSnapshot();
+            }
+        }
+
+        private static bool Finite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         public Vector2 GetKnightVelocity()
@@ -350,6 +427,7 @@ namespace KnightPos
                     HierarchyPath = GetHierarchyPath(hazard.transform),
                     Box = box,
                     Velocity = velocity,
+                    HazardType = hazard.hazardType,
                     BossAttached = boss != null
                         && (hazard.transform == boss.transform
                             || hazard.transform.IsChildOf(boss.transform)),

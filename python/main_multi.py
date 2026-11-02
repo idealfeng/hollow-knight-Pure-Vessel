@@ -20,6 +20,7 @@ import torch.optim as optim
 
 from agent.action import BUTTON_ORDER, NUM_BUTTONS, SPELL_ACTION_NAMES, is_intro_state
 from agent.reward import get_reward_config
+from observation_schema import LEGACY_SCHEMA, COMBAT_SCHEMA
 from endpoints import resolve_endpoints
 from evaluation import evaluate_pool, interrupt_episode_stats
 from env_worker import env_worker_main
@@ -58,7 +59,8 @@ class ExternalEnvPool:
 
     def __init__(self, endpoints, control_hz, frame_stack, episode_time_limit,
                  game_speed, reward_profile="victory_v1", boss_level=None,
-                 observation_time_limit=None, action_distribution=LEGACY_DISTRIBUTION):
+                 observation_time_limit=None, action_distribution=LEGACY_DISTRIBUTION,
+                 observation_schema=LEGACY_SCHEMA):
         context = mp.get_context("spawn")
         self.endpoints = [(str(host), int(port)) for host, port in endpoints]
         self.ports = tuple(port for _, port in self.endpoints)
@@ -73,7 +75,7 @@ class ExternalEnvPool:
                 target=env_worker_main,
                 args=(child, host, port, control_hz, frame_stack,
                       episode_time_limit, game_speed, reward_profile, boss_level,
-                      observation_time_limit, action_distribution),
+                      observation_time_limit, action_distribution, observation_schema),
                 name=f"HollowRL-env-{host}-{port}",
                 daemon=True,
             )
@@ -332,9 +334,11 @@ def parse_args():
                         help="parameter update scope; existing runs inherit their saved mode")
     parser.add_argument("--action-distribution", choices=(LEGACY_DISTRIBUTION, SPELL_DISTRIBUTION), default=None,
                         help="existing runs/initial checkpoints inherit their action schema")
+    parser.add_argument("--observation-schema", choices=(LEGACY_SCHEMA, COMBAT_SCHEMA), default=None,
+                        help="combat_v2 appends measured dash protection and cooldown states")
     parser.add_argument("--eval-every", type=int, default=0,
                         help="run fixed greedy evaluation every N updates; 0 disables")
-    parser.add_argument("--reward-profile", choices=("victory_v1", "nohit_v1", "radiant_spacing_v1", "radiant_wave_clear_v1", "radiant_spells_v1", "radiant_spells_dodge_v1"), default=None,
+    parser.add_argument("--reward-profile", choices=("victory_v1", "nohit_v1", "radiant_spacing_v1", "radiant_wave_clear_v1", "radiant_spells_v1", "radiant_spells_dodge_v1", "radiant_potential_v1"), default=None,
                         help="new-run reward profile; existing runs inherit their saved profile")
     parser.add_argument("--eval-objective", choices=("victory", "nohit"), default=None,
                         help="new-run selection objective; existing runs inherit their saved objective")
@@ -413,10 +417,11 @@ def main():
             previous_config = torch.load(checkpoint_path, map_location="cpu", weights_only=False).get("training_config", {})
     for field, default in (("reward_profile", "victory_v1"), ("eval_objective", "victory"),
                            ("boss_level", None), ("observation_time_limit", None),
-                           ("train_mode", "all"), ("action_distribution", LEGACY_DISTRIBUTION)):
+                           ("train_mode", "all"), ("action_distribution", LEGACY_DISTRIBUTION),
+                           ("observation_schema", LEGACY_SCHEMA)):
         requested = getattr(args, field)
         saved_value = previous_config.get(field, default)
-        if field == "action_distribution" and not os.path.isfile(checkpoint_path) and args.init_checkpoint:
+        if field in ("action_distribution", "observation_schema") and not os.path.isfile(checkpoint_path) and args.init_checkpoint:
             saved_value = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False).get(field, default)
         if os.path.isfile(checkpoint_path) and requested is not None and requested != saved_value:
             raise SystemExit(f"Cannot change {field} inside an existing run; fork with --init-checkpoint and a new --run-dir")
@@ -430,6 +435,11 @@ def main():
         raise SystemExit("Spell policies require --train-mode all")
     if with_spells and (args.control_hz > 10 or args.game_speed != 1.0):
         raise SystemExit("Spell policies currently require <=10 Hz and 1x speed so each quick-cast tap has a release interval")
+    if args.reward_profile == "radiant_potential_v1":
+        if args.observation_schema != COMBAT_SCHEMA or not with_spells:
+            raise SystemExit("Potential training requires a migrated combat_v2 spell checkpoint")
+        if get_reward_config(args.reward_profile).potential.gamma != GAMMA:
+            raise SystemExit("Potential shaping and PPO must use the same discount factor")
 
     print(
         f"starting {num_envs} environments on "
@@ -440,10 +450,12 @@ def main():
 
     prepare_fights(endpoints)
 
+    pool_options = ({"observation_schema": args.observation_schema}
+                    if args.observation_schema != LEGACY_SCHEMA else {})
     pool = ExternalEnvPool(
         endpoints, args.control_hz, args.frame_stack,
         args.episode_time_limit, args.game_speed, args.reward_profile, args.boss_level,
-        args.observation_time_limit, args.action_distribution,
+        args.observation_time_limit, args.action_distribution, **pool_options,
     )
 
     # Reset concurrently.  Waiting for replies in index order does not make
@@ -492,6 +504,9 @@ def main():
 
     if init_source is not None:
         checkpoint = torch.load(init_source, map_location="cpu", weights_only=False)
+        if checkpoint.get("observation_schema", LEGACY_SCHEMA) != args.observation_schema:
+            pool.close()
+            raise SystemExit("Checkpoint observation schema differs; migrate before starting a new schema")
         expected = {
             "format_version": checkpoint_format,
             "observation_size": state_size,
@@ -726,6 +741,7 @@ def main():
             "model_hidden": MODEL_HIDDEN,
             "num_envs": num_envs,
             "action_distribution": args.action_distribution,
+            "observation_schema": args.observation_schema,
             "ports": list(ports),
             "endpoints": [f"{host}:{port}" for host, port in endpoints],
             "training_config": run_config,

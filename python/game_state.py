@@ -7,6 +7,7 @@ and one parser no matter how many consumers there are.
 """
 
 import os
+import math
 import socket
 import threading
 import time
@@ -92,6 +93,14 @@ is_touching_wall_left = False
 is_touching_wall_right = False
 can_shade_cloak_now = False
 is_invuln = False
+dash_state_valid = False
+can_dash_now = False
+is_shadow_dashing = False
+shadow_cooldown_remaining = 0.0
+shadow_dash_remaining = 0.0
+dash_remaining = 0.0
+invulnerability_remaining = 0.0
+invulnerability_time_valid = False
 
 _thread = None
 
@@ -104,6 +113,7 @@ class Hazard:
     box: tuple
     velocity: tuple
     boss_attached: bool
+    hazard_type: int | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +150,14 @@ class Frame:
     is_touching_wall_right: bool
     can_shade_cloak_now: bool
     is_invuln: bool
+    dash_state_valid: bool = False
+    can_dash_now: bool = False
+    is_shadow_dashing: bool = False
+    shadow_cooldown_remaining: float = 0.0
+    shadow_dash_remaining: float = 0.0
+    dash_remaining: float = 0.0
+    invulnerability_remaining: float = 0.0
+    invulnerability_time_valid: bool = False
 
 
 def _parse_frame(response):
@@ -152,8 +170,10 @@ def _parse_frame(response):
         3: counters              hits,damages   (lifetime, never reset)
         4: scalars               see the unpack below
         5: flags                 ten "1"/"0"s (last is authoritative ground)
-        6: boss box              same as 0, or empty when absent
-        7+: hazard               id,box(4),velocity(2),boss_attached
+        6: boss control FSM      active state name, or empty
+        7: boss box              same as 0, or empty when absent
+        8+: hazard               id,box(4),velocity(2),boss_attached
+        tagged final sections: dash_v1 (eight fields), hazard_types_v1
     """
     parts = response.split(";")
 
@@ -177,9 +197,43 @@ def _parse_frame(response):
 
     boss_control_state = parts[6] if len(parts) > 6 else ""
 
+    dash_fields = {}
+    hazard_types = {}
+    dash_payloads = [payload for payload in parts[8:] if payload.startswith("dash_v1,")]
+    type_payloads = [payload for payload in parts[8:] if payload == "hazard_types_v1"
+                     or payload.startswith("hazard_types_v1,")]
+    if len(dash_payloads) > 1 or len(type_payloads) > 1:
+        raise ValueError("duplicate versioned telemetry section")
+    if dash_payloads:
+        fields = dash_payloads[0].split(",")
+        if len(fields) != 9 or any(fields[index] not in ("0", "1") for index in (1, 2, 3, 8)):
+            raise ValueError("invalid dash_v1 telemetry")
+        durations = [float(value) for value in fields[4:8]]
+        if any(not math.isfinite(value) or value < 0 for value in durations):
+            raise ValueError("invalid dash_v1 duration")
+        valid = fields[1] == "1" and box is not None
+        dash_fields = dict(
+            dash_state_valid=valid,
+            can_dash_now=valid and fields[2] == "1",
+            is_shadow_dashing=valid and fields[3] == "1",
+            shadow_cooldown_remaining=durations[0] if valid else 0.0,
+            shadow_dash_remaining=durations[1] if valid else 0.0,
+            dash_remaining=durations[2] if valid else 0.0,
+            invulnerability_remaining=durations[3] if valid else 0.0,
+            invulnerability_time_valid=valid and fields[8] == "1",
+        )
+    if type_payloads:
+        for item in type_payloads[0].split(",")[1:]:
+            instance_id, hazard_type = map(int, item.split(":"))
+            if instance_id in hazard_types or hazard_type < 0:
+                raise ValueError("invalid hazard_types_v1 mapping")
+            hazard_types[instance_id] = hazard_type
+
     parsed_hazards = []
     for payload in parts[8:]:
         if not payload:
+            continue
+        if payload.startswith("dash_") or payload.startswith("hazard_types_"):
             continue
         (instance_id, min_x, min_y, max_x, max_y,
          hazard_vel_x, hazard_vel_y, boss_attached) = payload.split(",")
@@ -188,6 +242,7 @@ def _parse_frame(response):
             box=(float(min_x), float(min_y), float(max_x), float(max_y)),
             velocity=(float(hazard_vel_x), float(hazard_vel_y)),
             boss_attached=boss_attached == "1",
+            hazard_type=hazard_types.get(int(instance_id)),
         ))
 
     return Frame(
@@ -222,6 +277,7 @@ def _parse_frame(response):
         is_touching_wall_right=touching_wall_right,
         can_shade_cloak_now=shade_cloak_now,
         is_invuln=invuln,
+        **dash_fields,
     )
 
 
@@ -250,6 +306,9 @@ def _publish(frame):
     global is_dashing, is_jumping, is_falling, is_on_ground, is_recoiling
     global is_touching_wall_left, is_touching_wall_right
     global can_shade_cloak_now, is_invuln
+    global dash_state_valid, can_dash_now, is_shadow_dashing
+    global shadow_cooldown_remaining, shadow_dash_remaining, dash_remaining
+    global invulnerability_remaining, invulnerability_time_valid
     global episode_death_frame
 
     if (_episode_tracking and episode_death_frame is None
@@ -298,12 +357,23 @@ def _publish(frame):
     is_touching_wall_right = frame.is_touching_wall_right
     can_shade_cloak_now = frame.can_shade_cloak_now
     is_invuln = frame.is_invuln
+    dash_state_valid = frame.dash_state_valid and frame.knight_box is not None
+    can_dash_now = dash_state_valid and frame.can_dash_now
+    is_shadow_dashing = dash_state_valid and frame.is_shadow_dashing
+    shadow_cooldown_remaining = frame.shadow_cooldown_remaining if dash_state_valid else 0.0
+    shadow_dash_remaining = frame.shadow_dash_remaining if dash_state_valid else 0.0
+    dash_remaining = frame.dash_remaining if dash_state_valid else 0.0
+    invulnerability_remaining = frame.invulnerability_remaining if dash_state_valid else 0.0
+    invulnerability_time_valid = dash_state_valid and frame.invulnerability_time_valid
 
 
 def _on_disconnect():
     """Blank out anything that would be a lie while we have no feed."""
     global connected, knight_box, attacking, attack_box, hazard_boxes, hazards
     global hit_streak, _prev_hits, _prev_damages, boss_state_age, _boss_state_last_update
+    global dash_state_valid, can_dash_now, is_shadow_dashing
+    global shadow_cooldown_remaining, shadow_dash_remaining, dash_remaining
+    global invulnerability_remaining, invulnerability_time_valid
 
     connected = False
     knight_box = None
@@ -311,6 +381,10 @@ def _on_disconnect():
     attack_box = None
     hazard_boxes = []
     hazards = []
+    dash_state_valid = can_dash_now = is_shadow_dashing = False
+    shadow_cooldown_remaining = shadow_dash_remaining = dash_remaining = 0.0
+    invulnerability_remaining = 0.0
+    invulnerability_time_valid = False
     # Don't bridge a streak across a dropped connection.
     hit_streak = 0
     boss_state_age = 0.0

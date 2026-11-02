@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 from agent.action import boss_move, boss_phase, requested_spell
+from observation_schema import DASH_FEATURES
 
 
 def trace_state(state):
@@ -28,8 +29,11 @@ def trace_state(state):
         "knight_box": list(state["knight_box"]) if state.get("knight_box") is not None else None,
         "boss_box": list(state["boss_box"]) if state.get("boss_box") is not None else None,
         "knight_velocity": list(state.get("knight_velocity", (0.0, 0.0))),
+        "boss_velocity": list(state.get("boss_velocity", (0.0, 0.0))),
+        **{name: state.get(name) for name in DASH_FEATURES},
         "hazards": [{"instance_id": int(h.instance_id), "box": list(h.box),
-                     "velocity": list(h.velocity), "boss_attached": bool(h.boss_attached)}
+                     "velocity": list(h.velocity), "boss_attached": bool(h.boss_attached),
+                     "hazard_type": getattr(h, "hazard_type", None)}
                     for h in state.get("hazards", [])],
     }
 

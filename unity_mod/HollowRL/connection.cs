@@ -63,6 +63,7 @@ public partial class HollowRL : BaseUnityPlugin
     private float wallDistanceLeft = 100f;
     private float wallDistanceRight = 100f;
     private bool canShadeCloakNow;
+    private KnightPos.DashSnapshot dashState;
     private float gameSpeed = 1f;
     private bool trainingPaused;
     private volatile float requestedGameSpeed = -1f;
@@ -291,6 +292,7 @@ public partial class HollowRL : BaseUnityPlugin
                 wallDistanceLeft = 100f;
                 wallDistanceRight = 100f;
                 canShadeCloakNow = false;
+                dashState = new KnightPos.DashSnapshot();
                 wasInvulnerable = false;
                 bossHealthTracked = false;
                 knightHealthTracked = false;
@@ -375,6 +377,7 @@ public partial class HollowRL : BaseUnityPlugin
         bool touchingWallRight = knightPos.IsTouchingWallRight();
         Vector2 wallDistances = knightPos.GetWallDistances();
         bool shadeCloakAvailable = knightPos.CanShadeCloakNow();
+        KnightPos.DashSnapshot currentDashState = knightPos.GetDashSnapshot();
 
         int newHits = 0;
         if (boss != null)
@@ -428,6 +431,7 @@ public partial class HollowRL : BaseUnityPlugin
             wallDistanceLeft = wallDistances.x;
             wallDistanceRight = wallDistances.y;
             canShadeCloakNow = shadeCloakAvailable;
+            dashState = currentDashState;
 
             hitCount += newHits;
             damageCount += newDamage;
@@ -714,6 +718,7 @@ public partial class HollowRL : BaseUnityPlugin
         public float WallDistanceLeft;
         public float WallDistanceRight;
         public bool ShadeCloakAvailable;
+        public KnightPos.DashSnapshot DashState;
         public bool Invulnerable;
         public bool Paused;
     }
@@ -753,6 +758,7 @@ public partial class HollowRL : BaseUnityPlugin
                 WallDistanceLeft = wallDistanceLeft,
                 WallDistanceRight = wallDistanceRight,
                 ShadeCloakAvailable = canShadeCloakNow,
+                DashState = dashState,
                 Invulnerable = wasInvulnerable,
                 Paused = trainingPaused,
             };
@@ -787,6 +793,8 @@ public partial class HollowRL : BaseUnityPlugin
     ///   6:  control fsm      PlayMaker "Control" FSM ActiveStateName, or empty
     ///   7:  boss box         min_x,min_y,max_x,max_y, or empty
     ///   8+: one hazard       id,min_x,min_y,max_x,max_y,vel_x,vel_y,boss_attached
+    ///   last: dash_v1        valid,can_dash,shadow_dashing,shadow_cooldown,
+    ///                        shadow_remaining,dash_remaining,invuln_remaining,invuln_time_valid
     /// </summary>
     private string BuildStateLine()
     {
@@ -853,6 +861,22 @@ public partial class HollowRL : BaseUnityPlugin
               .Append(hazard.Velocity.y).Append(',')
               .Append(hazard.BossAttached ? 1 : 0);
         }
+
+        // Versioned appended telemetry leaves the existing scalar/flag and
+        // hazard positions unchanged. New readers recognize the prefix;
+        // old feeds remain explicitly invalid for this additional schema.
+        sb.Append(";dash_v1,")
+          .Append(s.DashState.Valid ? 1 : 0).Append(',')
+          .Append(s.DashState.CanDashNow ? 1 : 0).Append(',')
+          .Append(s.DashState.ShadowDashing ? 1 : 0).Append(',')
+          .Append(s.DashState.ShadowCooldownRemaining).Append(',')
+          .Append(s.DashState.ShadowDashRemaining).Append(',')
+          .Append(s.DashState.DashRemaining).Append(',')
+          .Append(s.DashState.InvulnerabilityRemaining).Append(',')
+          .Append(s.DashState.InvulnerabilityTimeValid ? 1 : 0);
+        sb.Append(";hazard_types_v1");
+        foreach (KnightPos.HazardSnapshot hazard in s.Hazards)
+            sb.Append(',').Append(hazard.InstanceId).Append(':').Append(hazard.HazardType);
 
         return sb.ToString();
     }

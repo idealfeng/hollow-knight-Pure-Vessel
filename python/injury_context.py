@@ -1,12 +1,14 @@
 """Compact observations around health loss; diagnostics rather than policy inputs."""
 from agent.action import boss_move, boss_phase
+from observation_schema import DASH_FEATURES
 
 
 def combat_context(state, step, action=None):
     hazards = []
     for hazard in state.get("hazards", [])[:8]:
         hazards.append({"box": list(hazard.box), "velocity": list(hazard.velocity),
-                        "boss_attached": bool(hazard.boss_attached)})
+                        "boss_attached": bool(hazard.boss_attached),
+                        "hazard_type": getattr(hazard, "hazard_type", None)})
     return {
         "step": int(step), "health": int(state.get("knight_health", 0)),
         "damage_count": int(state.get("damage_count", 0)),
@@ -16,6 +18,7 @@ def combat_context(state, step, action=None):
         "shade_ready": bool(state.get("can_shade_cloak_now", False)),
         "dashing": bool(state.get("is_dashing", False)),
         "invulnerable": bool(state.get("is_invuln", False)),
+        **{name: state.get(name) for name in DASH_FEATURES},
         "knight_box": list(state["knight_box"]) if state.get("knight_box") is not None else None,
         "boss_box": list(state["boss_box"]) if state.get("boss_box") is not None else None,
         "hazards": hazards,

@@ -20,5 +20,6 @@ runs/
 # Local tooling
 .claude/settings.local.json
 mod_backups/
+tools/combat_state_backups/
 artifacts/
 !models/traitor_lord_radiant.pth

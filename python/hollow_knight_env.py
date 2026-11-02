@@ -22,6 +22,7 @@ from injury_context import combat_context
 from combat_trace import CombatTrace
 from enviroment import OBSERVATION_SIZE, get_state, is_done, reset_environment, state_to_vector
 from enviroment.reset import state_is_combat_ready
+from observation_schema import LEGACY_SCHEMA, COMBAT_SCHEMA, observation_width
 
 DEFAULT_CONTROL_HZ = 10
 DEFAULT_FRAME_STACK = 4
@@ -66,7 +67,8 @@ class HollowKnightEnv(gym.Env):
                  frame_stack=DEFAULT_FRAME_STACK,
                  episode_time_limit=DEFAULT_TIME_LIMIT,
                  reuse_live_fight=False, reward_profile="victory_v1", boss_level=None,
-                 observation_time_limit=None, action_distribution="exclusive_directions_v1"):
+                 observation_time_limit=None, action_distribution="exclusive_directions_v1",
+                 observation_schema=LEGACY_SCHEMA):
         super().__init__()
         self.control_hz = int(control_hz)
         if self.control_hz <= 0:
@@ -87,7 +89,10 @@ class HollowKnightEnv(gym.Env):
         if boss_level not in (None, 0, 1, 2):
             raise ValueError("boss level must be 0, 1, or 2")
 
-        self.stacker = FrameStacker(OBSERVATION_SIZE, int(frame_stack))
+        self.observation_schema = observation_schema
+        self.stacker = FrameStacker(observation_width(observation_schema), int(frame_stack))
+        if reward_profile == "radiant_potential_v1" and observation_schema != COMBAT_SCHEMA:
+            raise ValueError("The potential objective requires combat_v2 and verified dash telemetry")
         self.action_distribution = action_distribution
         if action_distribution == "exclusive_directions_v1":
             self.action_space = gym.spaces.MultiBinary(NUM_BUTTONS)
@@ -132,6 +137,11 @@ class HollowKnightEnv(gym.Env):
         steps = self.episode_steps if steps is None else steps
         return min(steps * self.step_dt / self.observation_time_limit, 1.0)
 
+    def _encode(self, state, steps=None):
+        if self.observation_schema == LEGACY_SCHEMA:
+            return state_to_vector(state, self._time_fraction(steps))
+        return state_to_vector(state, self._time_fraction(steps), schema=self.observation_schema)
+
     def _read(self, steps=None, retries=40, delay=0.02):
         for _ in range(retries):
             death = game_state.episode_death_frame
@@ -147,11 +157,11 @@ class HollowKnightEnv(gym.Env):
                     damage_count=death.damage_count - game_state.damage_count_baseline,
                     attacking=False, attack_box=None,
                 )
-                vector = state_to_vector(state, self._time_fraction(steps))
+                vector = self._encode(state, steps)
                 return state, np.asarray(vector, dtype=np.float32)
             state = get_state()
             try:
-                vector = state_to_vector(state, self._time_fraction(steps))
+                vector = self._encode(state, steps)
             except (IndexError, TypeError, ValueError):
                 vector = None
             if vector is not None:
@@ -200,6 +210,9 @@ class HollowKnightEnv(gym.Env):
             "boss_level": self.boss_level,
             "spell_requests": dict(self.spell_requests),
             "soul_spent": self.soul_spent,
+            "observation_schema": self.observation_schema,
+            "potential_applied_steps": self.reward_tracker.potential_applied_steps,
+            "potential_invalid_steps": self.reward_tracker.potential_invalid_steps,
         }
         if include_damage_events:
             info["damage_events"] = list(self.damage_events)
@@ -355,7 +368,7 @@ class HollowKnightEnv(gym.Env):
             current["boss_facing_left"] = None
             current["boss_control_state"] = ""
             raw = np.asarray(
-                state_to_vector(current, self._time_fraction(next_step)),
+                self._encode(current, next_step),
                 dtype=np.float32,
             )
             disconnected = False

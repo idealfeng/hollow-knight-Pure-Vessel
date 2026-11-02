@@ -26,6 +26,7 @@ from obs_norm import RunningNorm
 from policy_runtime import load_checkpoint, stage_fresh_fight
 from policy_selection import is_flawless
 from ppo_model import ActorCritic
+from observation_schema import LEGACY_SCHEMA
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -218,8 +219,10 @@ class DodgeRewardTrial:
         started = time.monotonic()
         try:
             self.check_idle()
+            options = ({"observation_schema": saved["observation_schema"]}
+                       if saved.get("observation_schema", LEGACY_SCHEMA) != LEGACY_SCHEMA else {})
             pool = ExternalEnvPool(self.endpoints, 10, saved["frame_stack"], self.episode_time_limit,
-                                   1.0, CONTROL_PROFILE, 2, 60.0, "exclusive_directions_spells_v1")
+                                   1.0, CONTROL_PROFILE, 2, 60.0, "exclusive_directions_spells_v1", **options)
 
             def record(result):
                 self.check_stop()
