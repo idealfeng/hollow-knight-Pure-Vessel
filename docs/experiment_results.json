@@ -1,0 +1,124 @@
+{
+  "as_of_date": "2026-11-02",
+  "timezone": "Asia/Shanghai",
+  "scope": "Historical training experiments; post-cleanup live acceptance is documented separately in the project README.",
+  "standard_conditions": {
+    "boss": "Traitor Lord",
+    "native_difficulty": "Radiant",
+    "boss_level": 2,
+    "boss_initial_hp": 1300,
+    "hero_initial_hp": 9,
+    "hero_initial_blue_hp": 0,
+    "hero_initial_soul": 0,
+    "nail_damage": 21,
+    "combat_charms": false,
+    "spells": ["Shade Soul", "Abyss Shriek", "Descending Dark"],
+    "healing": false,
+    "nail_arts": false,
+    "game_speed": 1,
+    "nominal_control_hz": 10,
+    "nominal_episode_time_limit_seconds": 150,
+    "observation_time_scale_seconds": 60,
+    "early_33_damage_results_are_standard_21_results": false
+  },
+  "policy_artifacts": {
+    "original_550": {
+      "action_distribution": "exclusive_directions_spells_v1",
+      "frame_stack": 4,
+      "observation_size": 472,
+      "sha256": "7ac14df0a95ef4fd191ade3e51ee19f94f7383587fc3a9107e826f86d4dd7104"
+    },
+    "original_650": {
+      "action_distribution": "exclusive_directions_spells_v1",
+      "frame_stack": 16,
+      "observation_size": 1888,
+      "sha256": "9d04b34b66a958d1f1d582710863de7a10e2bb2de6e0082afe7b9a0687c7f68d"
+    }
+  },
+  "same_model_fixed_evaluations": [
+    {"model": "original_550", "round": "historical", "fights_per_host": 20, "host_a_nohit_wins": 0, "host_b_nohit_wins": 2, "host_a_mean_boss_hp": 398.2, "host_b_mean_boss_hp": 397.55},
+    {"model": "original_550", "round": "independent_legacy_execution", "fights_per_host": 20, "host_a_nohit_wins": 0, "host_b_nohit_wins": 1, "host_a_mean_boss_hp": 397.2, "host_b_mean_boss_hp": 568.45},
+    {"model": "original_650", "round": "historical", "fights_per_host": 20, "host_a_nohit_wins": 2, "host_b_nohit_wins": 0, "host_a_mean_boss_hp": 453.0, "host_b_mean_boss_hp": 468.75}
+  ],
+  "recording_attempts": {
+    "original_550_host_a": {"sessions_completed_fights": [132, 134, 34, 109], "completed_fights": 409, "nohit_wins": 0, "best_boss_hp": 29},
+    "original_650_host_a": [
+      {"completed_fights": 23, "first_success_fight": 23, "nohit_wins": 1, "successful_fight_steps": 885, "damage": 0, "episode_damage": 0, "damage_tracking_valid": true, "weights_unchanged": true, "normalization_unchanged": true},
+      {"completed_fights": 31, "first_success_fight": 31, "nohit_wins": 1, "successful_fight_steps": 569, "damage": 0, "episode_damage": 0, "damage_tracking_valid": true, "weights_unchanged": true, "normalization_unchanged": true}
+    ],
+    "stopping_rule": "Stop at first valid flawless win; these sessions are not fixed-budget win-rate estimates."
+  },
+  "execution_audit": {
+    "training_and_inference_host": "A",
+    "shared_policy_across_hosts": true,
+    "confirmed_startup_fps_request": {"A": 60, "B": 30},
+    "startup_resolution_both_hosts": [640, 360],
+    "runtime_fps_measured": false,
+    "host_b_actual_loaded_game_and_mod_hashes_verified": false,
+    "historical_same_550_legacy_mean_decision_ms": {"A_1": 103.6404471124002, "A_2": 103.86813604408053, "B_1": 110.66583654065526, "B_2": 110.12487992313628},
+    "timing_limits": "Long-sample historical means; individual old monotonic timestamps are quantized on Windows. Startup cap and actual runtime FPS are distinct.",
+    "shared_first_observation_limit": "First action after resuming can use a retained paused observation; no engine frame-id freshness guarantee.",
+    "host_difference_causally_isolated": false
+  },
+  "input_execution_screen": [
+    {"profile": "legacy_v1", "episodes": 40, "nohit_wins": 1, "mean_boss_hp": 482.825},
+    {"profile": "repeat_dash_v1", "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 489.075},
+    {"profile": "soul_guard_v1", "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 408.725}
+  ],
+  "discrete_final": {
+    "action_distribution": "discrete_macros_v1",
+    "macro_actions": 35,
+    "frame_stack": 16,
+    "observation_size": 1888,
+    "initial_inherited_update": 550,
+    "final_saved_update": 845,
+    "new_ppo_updates": 295,
+    "initial_inherited_global_step": 1128448,
+    "final_saved_global_step": 1658368,
+    "new_applied_training_transitions": 529920,
+    "completed_training_fights_in_logs": 1335,
+    "training_wins": 0,
+    "initial_inherited_episode_counter": 3266,
+    "final_saved_episode_counter": 4595,
+    "saved_episode_counter_delta": 1329,
+    "finished_fights_not_in_final_saved_updates": 6,
+    "completed_fixed_evaluation_fights": 374,
+    "fights_in_complete_evaluation_rounds": 360,
+    "finished_fights_in_interrupted_evaluation_round": 14,
+    "evaluation_wins": 0,
+    "best_training_boss_hp": 77,
+    "best_fixed_evaluation_boss_hp": 136,
+    "last_four_environment_branch_best_update": 825,
+    "last_four_environment_branch_best_mean_boss_hp": 525.0,
+    "stopped_by_user": true,
+    "automatic_resume": false,
+    "complete_evaluations": [
+      {"update": 575, "episodes": 30, "nohit_wins": 0, "mean_boss_hp": 469.03333333333336},
+      {"update": 600, "episodes": 30, "nohit_wins": 0, "mean_boss_hp": 509.1},
+      {"update": 625, "episodes": 30, "nohit_wins": 0, "mean_boss_hp": 550.9},
+      {"update": 650, "episodes": 30, "nohit_wins": 0, "mean_boss_hp": 527.6333333333333},
+      {"update": 675, "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 655.625},
+      {"update": 700, "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 586.35},
+      {"update": 725, "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 655.7},
+      {"update": 750, "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 614.275},
+      {"update": 800, "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 689.8},
+      {"update": 825, "episodes": 40, "nohit_wins": 0, "mean_boss_hp": 525.0}
+    ]
+  },
+  "discussed_but_not_implemented": [
+    "gamma_0.999_single_variable_trial",
+    "progressive_hit_budget_curriculum",
+    "reliable_targeted_danger_state_drills",
+    "engine_frame_id_and_input_application_acknowledgments",
+    "counterbalanced_actual_30_vs_60_fps_causal_trial"
+  ],
+  "interpretation_limits": [
+    "Early 33-damage and standard 21-damage runs must not be pooled.",
+    "Small fixed evaluations and selected successful recordings do not establish stable no-hit probabilities.",
+    "Potential reward and expanded telemetry were changed together, so their individual causal effects are not isolated.",
+    "Original 650 and discrete 650 are different policies.",
+    "Three-worker and four-worker evaluation means have different endpoint composition.",
+    "Observed command requests do not prove native action execution or successful casts.",
+    "The discrete run did not produce a win within the recorded budget; this is not a universal claim about discrete action spaces."
+  ]
+}

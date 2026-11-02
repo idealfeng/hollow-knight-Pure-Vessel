@@ -5,7 +5,7 @@ param(
     [int[]]$Ports = @(9001, 9002),
     [string]$BindIp = "",
     [ValidateRange(30, 120)]
-    [int]$Fps = 30,
+    [int]$Fps = 60,
     [ValidateRange(0.5, 4.0)]
     [double]$GameSpeed = 1.0,
     [ValidateRange(320, 1920)]
@@ -63,6 +63,20 @@ for ($index = 0; $index -lt $GameDirs.Count; $index++) {
             -not $commandLine.Contains("--hollowrl-boss-fsm=$BossFsm")) {
             throw "Port $port is running with different Boss settings. Close that game and relaunch it for $BossName."
         }
+        $existingFps = [regex]::Match($commandLine, '(?i)(?:^|\s)"?--hollowrl-fps="?(\d+)"?(?=\s|$)')
+        $existingSpeed = [regex]::Match($commandLine, '(?i)(?:^|\s)"?--hollowrl-speed="?([^\s"]+)"?(?=\s|$)')
+        $existingSpeedValue = 0.0
+        if (-not $existingFps.Success -or -not $existingSpeed.Success -or
+            -not [double]::TryParse($existingSpeed.Groups[1].Value,
+                [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$existingSpeedValue)) {
+            throw "Port $port has no verifiable FPS/speed launch settings. Close that game and relaunch it with -Fps $Fps -GameSpeed $GameSpeed."
+        }
+        if ([double]::IsNaN($existingSpeedValue) -or [double]::IsInfinity($existingSpeedValue) -or
+            [int]$existingFps.Groups[1].Value -ne $Fps -or
+            [Math]::Abs($existingSpeedValue - $GameSpeed) -gt 0.000001) {
+            throw "Port $port was started with FPS=$($existingFps.Groups[1].Value), speed=$existingSpeedValue; requested FPS=$Fps, speed=$GameSpeed. Close that game and relaunch it with matching settings."
+        }
         $launched += [pscustomobject]@{
             Index = $index
             Port = $port
@@ -89,7 +103,7 @@ for ($index = 0; $index -lt $GameDirs.Count; $index++) {
         "--hollowrl-port=$($Ports[$index])",
         "--hollowrl-bind-ip=$bindIp",
         "--hollowrl-fps=$Fps",
-        "--hollowrl-speed=$GameSpeed",
+        "--hollowrl-speed=$($GameSpeed.ToString('G', [Globalization.CultureInfo]::InvariantCulture))",
         "--hollowrl-boss-name=`"$BossName`"",
         "--hollowrl-boss-scene=$BossScene",
         "--hollowrl-boss-fsm=$BossFsm",

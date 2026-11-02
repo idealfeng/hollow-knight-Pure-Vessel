@@ -1,5 +1,6 @@
 param(
-    [string]$GameDir = "D:\Program Files\Steam\steamapps\common\Hollow Knight"
+    [Parameter(Mandatory = $true)]
+    [string]$GameDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +17,7 @@ if (-not (Test-Path -LiteralPath $GameDir)) {
     throw "Hollow Knight directory not found: $GameDir"
 }
 
-& dotnet build $solution --configuration Release
+& dotnet build $solution --configuration Release "-p:HKDir=$GameDir"
 if ($LASTEXITCODE -ne 0) {
     throw "HollowRL mod build failed."
 }

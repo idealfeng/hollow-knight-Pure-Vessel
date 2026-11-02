@@ -1,0 +1,811 @@
+{
+  "checkpoint": "models/traitor_lord_radiant.pth",
+  "published_sha256": "63bfb0ad1a4e91e5730e5da37c4d349ffc4c5a37e7280002514d000568040cca",
+  "source_sha256": "9d04b34b66a958d1f1d582710863de7a10e2bb2de6e0082afe7b9a0687c7f68d",
+  "update": 650,
+  "action_distribution": "exclusive_directions_spells_v1",
+  "frame_stack": 16,
+  "game_speed": 1,
+  "control_hz": 10,
+  "episode_time_limit": 150,
+  "observation_time_limit": 60,
+  "action_selection": "greedy",
+  "attuned": {
+    "episodes": 20,
+    "wins": 15,
+    "nohit_wins": 0,
+    "win_rate": 0.75,
+    "nohit_rate": 0.0
+  },
+  "sessions": [
+    {
+      "session": "session_20261102_222144_116427",
+      "port": 9001,
+      "boss_level": 2,
+      "episodes": 2,
+      "wins": 0,
+      "nohit_wins": 0,
+      "win_rate": 0.0,
+      "nohit_rate": 0.0,
+      "valid": true,
+      "checkpoint_unchanged": true,
+      "normalizer_unchanged": true,
+      "pause_after_exit": {
+        "endpoint": "127.0.0.1:9001",
+        "paused": true,
+        "inputs_cleared": true
+      },
+      "fights": [
+        {
+          "episode": 1,
+          "steps": 584,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 385,
+          "boss_level": 2,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 2,
+          "steps": 473,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 445,
+          "boss_level": 2,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        }
+      ]
+    },
+    {
+      "session": "session_20261102_222349_952735",
+      "port": 9002,
+      "boss_level": 0,
+      "episodes": 10,
+      "wins": 7,
+      "nohit_wins": 0,
+      "win_rate": 0.7,
+      "nohit_rate": 0.0,
+      "valid": true,
+      "checkpoint_unchanged": true,
+      "normalizer_unchanged": true,
+      "pause_after_exit": {
+        "endpoint": "127.0.0.1:9002",
+        "paused": true,
+        "inputs_cleared": true
+      },
+      "fights": [
+        {
+          "episode": 1,
+          "steps": 336,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 304,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 2,
+          "steps": 422,
+          "won": true,
+          "damage": 7,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 3,
+          "steps": 470,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 90,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 4,
+          "steps": 429,
+          "won": true,
+          "damage": 2,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 5,
+          "steps": 334,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 267,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 6,
+          "steps": 337,
+          "won": true,
+          "damage": 7,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 7,
+          "steps": 576,
+          "won": true,
+          "damage": 6,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 8,
+          "steps": 498,
+          "won": true,
+          "damage": 5,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 9,
+          "steps": 372,
+          "won": true,
+          "damage": 6,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 10,
+          "steps": 485,
+          "won": true,
+          "damage": 4,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        }
+      ]
+    },
+    {
+      "session": "session_20261102_222518_658616",
+      "port": 9001,
+      "boss_level": 0,
+      "episodes": 10,
+      "wins": 8,
+      "nohit_wins": 0,
+      "win_rate": 0.8,
+      "nohit_rate": 0.0,
+      "valid": true,
+      "checkpoint_unchanged": true,
+      "normalizer_unchanged": true,
+      "pause_after_exit": {
+        "endpoint": "127.0.0.1:9001",
+        "paused": true,
+        "inputs_cleared": true
+      },
+      "fights": [
+        {
+          "episode": 1,
+          "steps": 470,
+          "won": true,
+          "damage": 3,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 2,
+          "steps": 469,
+          "won": true,
+          "damage": 3,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 3,
+          "steps": 510,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 39,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 4,
+          "steps": 504,
+          "won": true,
+          "damage": 2,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 5,
+          "steps": 349,
+          "won": true,
+          "damage": 2,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 6,
+          "steps": 483,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 117,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 7,
+          "steps": 477,
+          "won": true,
+          "damage": 7,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 8,
+          "steps": 533,
+          "won": true,
+          "damage": 4,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 9,
+          "steps": 291,
+          "won": true,
+          "damage": 5,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        },
+        {
+          "episode": 10,
+          "steps": 475,
+          "won": true,
+          "damage": 8,
+          "boss_min_hp": 0,
+          "boss_level": 0,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        }
+      ]
+    },
+    {
+      "session": "session_20261102_223319_813863",
+      "port": 9002,
+      "boss_level": 2,
+      "episodes": 1,
+      "wins": 0,
+      "nohit_wins": 0,
+      "win_rate": 0.0,
+      "nohit_rate": 0.0,
+      "valid": true,
+      "checkpoint_unchanged": true,
+      "normalizer_unchanged": true,
+      "pause_after_exit": {
+        "endpoint": "127.0.0.1:9002",
+        "paused": true,
+        "inputs_cleared": true
+      },
+      "fights": [
+        {
+          "episode": 1,
+          "steps": 252,
+          "won": false,
+          "damage": 9,
+          "boss_min_hp": 835,
+          "boss_level": 2,
+          "reset_mode": "scene",
+          "damage_tracking_valid": true,
+          "truncated_reason": null
+        }
+      ]
+    }
+  ],
+  "standard_loadout": {
+    "nail_damage": 21,
+    "hero_initial_health": 9,
+    "initial_soul": 0,
+    "combat_charms": [],
+    "void_heart_allowed": true,
+    "spells_level": 2,
+    "disk_save_template_validated": true,
+    "current_A_disk_save_validated": true,
+    "disk_evidence_is_not_memory_snapshot": true,
+    "actual_nail_first_hit_21_in_all_23_fights": true
+  },
+  "actual_damage_evidence": [
+    {
+      "phase": "radiant_entry",
+      "initial": {
+        "boss_level": 2,
+        "boss_health": 1300,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 13,
+        "boss_before": 1300,
+        "boss_after": 1279,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "radiant_entry",
+      "initial": {
+        "boss_level": 2,
+        "boss_health": 1300,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 11,
+        "boss_before": 1300,
+        "boss_after": 1279,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 10,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 13,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 11,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9001",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9001
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 17,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 13,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 22,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 51,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "attuned_9002",
+      "initial": {
+        "boss_level": 0,
+        "boss_health": 800,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 15,
+        "boss_before": 800,
+        "boss_after": 779,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    },
+    {
+      "phase": "radiant_return",
+      "initial": {
+        "boss_level": 2,
+        "boss_health": 1300,
+        "hero_health": 9,
+        "mana": 0.0,
+        "port": 9002
+      },
+      "first_damage": {
+        "step": 16,
+        "boss_before": 1300,
+        "boss_after": 1279,
+        "damage": 21,
+        "mana_before": 0.0,
+        "mana_after": 11.0
+      }
+    }
+  ],
+  "execution_conditions": {
+    "host": "A",
+    "ports": [
+      9001,
+      9002
+    ],
+    "fps_requested": 60,
+    "live_fps_measured": false,
+    "game_speed": 1,
+    "trace_enabled": true,
+    "B_included": false
+  },
+  "offline_checks": {
+    "unit_tests": 272,
+    "unit_tests_passed": true,
+    "python_syntax_files": 76,
+    "powershell_syntax_passed": true,
+    "mod_build_passed": true,
+    "mod_build_errors": 0,
+    "mod_build_existing_obsolete_api_warnings": 5,
+    "published_models_state_identical_to_sources": true
+  },
+  "limitations": [
+    "20 fixed Attuned fights are a small two-port test, not a stable-rate guarantee.",
+    "The3 Radiant fights validate entry/reset and difficulty switching, not a no-hit success-rate estimate.",
+    "Existing installed Mod was used; no game file or save was changed.",
+    "Current runtime spell/charms fields are not exposed as a complete loadout snapshot; actual first21 damage and disk checks are separate evidence."
+  ]
+}

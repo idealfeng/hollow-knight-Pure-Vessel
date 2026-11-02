@@ -18,6 +18,33 @@ def load_checkpoint(path):
             hashlib.sha256(payload).hexdigest())
 
 
+def freeze_game(endpoint, timeout=5.0):
+    """Clear input and verify a pause on exactly the caller's owned game."""
+    host, port = str(endpoint[0]), int(endpoint[1])
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        with sock.makefile("rwb", buffering=0) as stream:
+            def command(value):
+                stream.write((value + "\n").encode("ascii"))
+                reply = stream.readline(65536).decode().strip()
+                if not reply or reply.startswith("err "):
+                    raise RuntimeError(f"{host}:{port} {value}: {reply!r}")
+                return reply
+
+            if command("CLEAR") != "ok":
+                raise RuntimeError(f"{host}:{port}: CLEAR was not acknowledged")
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if command("SPEED 0") != "ok":
+                    raise RuntimeError(f"{host}:{port}: SPEED 0 was not acknowledged")
+                time.sleep(0.1)
+                scalars = command("pos").split(";")[4].split(",")
+                if abs(float(scalars[9])) < 0.05:
+                    return {"endpoint": f"{host}:{port}", "paused": True,
+                            "inputs_cleared": True}
+            raise RuntimeError(f"{host}:{port}: game did not acknowledge a paused state")
+
+
 def stage_fresh_fight(endpoint, boss_level):
     """Stage a verified full-health native fight, including on a fresh launch."""
     if boss_level not in (0, 1, 2):
@@ -51,6 +78,7 @@ def stage_fresh_fight(endpoint, boss_level):
                     expected_hp = 800 if boss_level == 0 else 1300
                     target = command("RESET_FIGHT TARGET").split(";")
                     if (int(scalars[3]) == expected_hp and int(scalars[7]) == 9
+                            and float(scalars[8]) == 0
                             and float(scalars[9]) == 0 and len(target) == 4
                             and int(target[2]) == boss_level
                             and int(target[3]) == boss_level):

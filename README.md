@@ -1,135 +1,191 @@
 # HollowRL：叛徒领主 PPO
 
-通过 BepInEx Mod 读取《空洞骑士》的角色、Boss 和弹幕状态，在游戏内注入按键，用 PPO 训练叛徒领主策略。控制频率 10 Hz，四帧堆叠的结构化观测，不依赖屏幕识别。支持固定权重试打、本机多窗口和跨电脑共享一个中央模型。
+通过 BepInEx Mod 读取碰撞盒、速度、生命、魂量和 Boss FSM，用游戏内输入接口执行动作，再以 PPO 训练。支持单窗口、本机多窗口和两台电脑共同采样；推理和参数更新由一台中央训练主机完成。
 
-## 环境与安装
+项目已录成标准配置下的叛徒领主辐辉无伤视频，但**没有得到稳定高胜率的无伤策略**。默认发布的是在 A 主机两次录屏成功的原组合动作、16 帧、第 650 次权重。35 动作离散分支保留为对照，本轮没有通关。
 
-需要 Windows PowerShell、正版 Hollow Knight、Python 3.11+、.NET SDK 和 BepInEx 5 x64。Python 监控面板需要 Tk。
+- [实验经过、失败探索与证据边界](docs/EXPERIMENTS.md)
+- [结构化实验结果](docs/experiment_results.json)
+- [清理后的离线与实机验收](docs/VALIDATION.md)
 
-1. 关闭游戏，把仓库 `BepInEx/` 的内容复制到游戏根目录，使 `winhttp.dll`、`doorstop_config.ini` 与 `hollow_knight.exe` 同级。运行游戏一次，再关闭。
-2. 构建 Mod，把示例路径替换成实际安装目录：
+## 安装
+
+以下命令在项目根目录的 Windows PowerShell 执行。需要 Hollow Knight、Python 3.11/3.12、支持 `.slnx` 的 .NET SDK 和 BepInEx 5 x64；GUI 面板需要可用的 Tk。
+
+1. 安装 BepInEx，使 `winhttp.dll`、`doorstop_config.ini` 与 `hollow_knight.exe` 同级，先运行一次确认加载正常，再关闭游戏。
+2. 编译并安装 Mod，替换自己的游戏路径：
+
+   ```powershell
+   .\install_mod_windows.ps1 -GameDir 'D:\Games\Hollow Knight'
+   ```
+
+   也可只编译，将输出的 `unity_mod/HollowRL/bin/Release/HollowRL.dll` 放入游戏的 `BepInEx/plugins/HollowRL/`：
 
    ```powershell
    dotnet build unity_mod/HollowRL.slnx -c Release '-p:HKDir=D:\Games\Hollow Knight'
    ```
 
-   将 `unity_mod/HollowRL/bin/Release/HollowRL.dll` 复制到每份游戏的 `BepInEx/plugins/HollowRL/HollowRL.dll`。
-3. 备份 `%USERPROFILE%\AppData\LocalLow\Team Cherry\Hollow Knight`，再复制 `HK_save/user1.dat`。它会替换 1 号存档；同一 Windows 账户的多个游戏实例共享存档目录，训练时关闭 Steam Cloud。
-4. 在仓库根目录建立 Python 环境：
+3. 游戏关闭时，先备份 `%USERPROFILE%\AppData\LocalLow\Team Cherry\Hollow Knight`，再按需将 `HK_save/user1.dat` 安装到 1 号槽位。同一 Windows 账户的游戏实例共享存档目录；使用训练存档时关闭 Steam Cloud，避免旧文件同步回来。
+4. 创建 Python 环境：
 
    ```powershell
    python -m venv python\.venv
    .\python\.venv\Scripts\python.exe -m pip install -r requirements.txt
    ```
 
-游戏程序集从已安装的游戏中引用，仓库不包含游戏本体。
+游戏本体及其原生程序集需要自行安装；构建时引用实际游戏目录。
 
-## 用已训练策略打辐辉并录屏
+## 角色配置与难度
 
-`models/traitor_lord_radiant.pth` 是历史更新 1000 的七按键模型，包含匹配的观测归一化。**核查发现，历史存档将基础骨钉伤害设为 33，且未装备力量护符；此前的 4/40 和无伤验收只能代表这个修改后的角色配置，不能作为标准 21 伤害成绩。**该模型保留用于迁移和复现历史结果；当前 `HK_save/user1.dat` 已恢复满级骨钉 21、无战斗护符，旧模型在新配置下的表现需重新评估。
+| 项目 | 标准配置 |
+|---|---|
+| 骨钉 | 满级，普通命中 **21 伤害** |
+| 护符 | 无战斗护符；允许保留虚空之心，编号 36 |
+| 资源 | 初始 9 格生命、0 蓝血、0 SOUL |
+| 法术 | 黑波、黑吼、黑砸均为升级版，正常耗魂；不使用回血和剑技 |
+| 调谐 | 原生 `boss-level 0`，Boss 初始 **800 HP** |
+| 升天 | 原生 `boss-level 1`，Boss 初始 **1300 HP** |
+| 辐辉 | 原生 `boss-level 2`，Boss 初始 **1300 HP**，一次有效受伤即死 |
 
-先启动 9001 游戏：
+1300 HP 本身不能区分升天与辐辉，程序还会校验原生难度等级和初始资源。早期曾使用实际单刀 33 伤害的旧配置，其成绩不混入标准 21 伤害结果；旧模型已备份，不再默认使用。
 
-```powershell
-.\launch_multi_games.ps1 -GameDirs 'D:\Games\Hollow Knight' -Ports 9001 -Fps 60 -Width 1280 -Height 720
-```
-
-加载 1 号训练存档，站到叛徒领主雕像前，开启自己的录屏软件，再执行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\record_radiant.ps1
-```
-
-按终端提示继续。入口只控制本机指定端口，使用固定贪心策略，不更新模型与归一化参数；校验原生辐辉难度 2、初始 Boss 血量 1300，以 1 倍速试打。每局上限 120 秒，观测时间特征仍使用来源模型的 60 秒尺度。失败自动重开，默认最多 100 局，无伤通关一次后停止重开。录屏软件需手动停止；终端 `Ctrl+C` 可中止试打。
-
-可用 `.\record_radiant.ps1 -Port 9001 -Episodes 20` 改端口与局数。试打结果写入 `python/runs/recordings/`。继续训练应使用完整 PPO checkpoint，以保留优化器状态；发布的推理模型用于固定策略运行。
-
-## 训练与监控
-
-每个窗口加载训练存档并位于雕像前，只启动一个中央训练器。显式辐辉示例：
+离线检查仓库训练模板：
 
 ```powershell
-.\python\.venv\Scripts\python.exe python\main_multi.py `
-  --ports 9001 9002 --run-dir python\runs\traitor_radiant `
-  --boss-level 2 --reward-profile radiant_spacing_v1 --eval-objective nohit `
-  --episode-time-limit 120 --observation-time-limit 60 `
-  --lr 0.0001 --ent-coef 0.005 --eval-every 25 --eval-episodes 10
+powershell -ExecutionPolicy Bypass -File .\tools\inspect_training_loadout.ps1 -RequireStandardLoadout
 ```
 
-已有运行目录时优先恢复其 `ppo_checkpoint.pth`；用完整旧模型开启新目录时增加 `--init-checkpoint <路径>`。需要保留迁移模型的归一化时增加 `--freeze-obs-norm`。每次更新保存最新状态，周期固定评估单独保存最优 checkpoint 与成绩。`--eval-episodes` 是每环境局数，四环境各 10 局合计 40 局。
+检查自己的磁盘存档时添加 `-SavePath 'D:\Saves\user1.dat'`。该工具只读磁盘，不连接游戏或写存档；通过检查不证明运行中的窗口已经重新加载。`tools/configure_training_loadout.ps1` 可通过 `-SavePath`、`-OutputPath` 生成独立的 21 伤害无战斗护符副本，拒绝覆盖源文件，也不授予尚未获得的法术。安装副本前关闭游戏，之后重新加载。
+
+## 单窗口录屏
+
+启动已安装 Mod 的游戏：
 
 ```powershell
-.\python\.venv\Scripts\python.exe python\watch_training.py --run-dir python\runs\traitor_radiant
-.\python\.venv\Scripts\python.exe python\summarize_run.py python\runs\traitor_radiant
+.\launch_multi_games.ps1 -GameDirs 'D:\Games\Hollow Knight' -Ports 9001 -Fps 60 -GameSpeed 1 -Width 1280 -Height 720
 ```
 
-监控只读文件，不接管游戏。训练回合使用随机动作；判断水平应结合固定权重评估的胜率、无伤局数和 Boss 最低血量，损失下降不保证胜率提高。
+加载 1 号训练存档，站到叛徒领主雕像前，不必手动选难度，然后执行：
 
-## 奖励与策略
+```powershell
+.\record_radiant.ps1 -Port 9001 -Episodes 0
+```
 
-七按键动作覆盖左右、上下、攻击、跳跃和冲刺，相反方向互斥。当前 `radiant_spacing_v1` 主要原始奖励：Boss 每损失 33 血 +1、击败 +100、每损失一格血 -3、死亡 -20、空挥 -0.03、无伤结束危险动作阶段 +0.05、每秒时间成本 -0.10；中立/恢复阶段距离过远有有界成本。冲击波 ACTIVE 初始水平边缘距离为 3～6 且阶段无伤结束时，每次动作额外 +0.20。辐辉致命受伤通常损失 9 格血，受伤与死亡合计 -47。PPO 内部使用原始奖励的 0.05 倍。
+默认使用 `models/traitor_lord_radiant.pth`，即原组合动作、16 帧、第 650 次权重。按提示启动录屏软件，再按 Enter 开始；贪心回放不更新模型与归一化。`-Episodes 0` 表示失败继续重试，首次有效无伤后停止；可用 `-Episodes 100` 限制最大尝试数，或 `Ctrl+C` 中止。退出时只释放输入并暂停所选端口。**录像软件仍需手动停止。**
+
+每局与汇总写入 `python/runs/recordings/session_*/`。首次成功即停得到的录像不能替代固定局数胜率测试。
+
+### 固定局数与难度切换
+
+用相同的默认 650 权重完整打完 20 局调谐，不因中途胜利提前停止：
+
+```powershell
+.\python\.venv\Scripts\python.exe python\play.py --port 9001 --boss-level 0 --episodes 20 --stop-after episodes
+```
+
+完整打完 2 局辐辉，检查原生辐辉进战与回放流程：
+
+```powershell
+.\python\.venv\Scripts\python.exe python\play.py --port 9001 --boss-level 2 --episodes 2 --stop-after episodes
+```
+
+`--boss-level 0/1/2` 对应调谐/升天/辐辉。`--stop-after flawless` 首次无伤通关后停止，`win` 首次任意通关后停止，`episodes` 打满给定的正数局数。`--episodes 0` 不能与 `--stop-after episodes` 同用。少量辐辉进战检查不等于证明无伤胜率。
+
+只检查模型能否加载，不连接游戏：
+
+```powershell
+.\python\.venv\Scripts\python.exe python\play.py --check-only
+```
+
+清理后的实际测试结果和固定局数单列于 [验收记录](docs/VALIDATION.md)，不把历史成功视频当作本次兼容性验收。
+
+## 发布模型
+
+| 文件 | 用途 | 帧堆叠 / 更新编号 | 大小 |
+|---|---|---|---:|
+| `models/traitor_lord_radiant.pth` | 默认推荐回放与续训，原组合动作 | 16 / 650 | 6.39 MiB |
+| `models/traitor_lord_radiant_4f_550.pth` | 原组合动作历史对照，A 录屏不可靠 | 4 / 550 | 2.22 MiB |
+| `models/traitor_lord_discrete_16f_825.pth` | 35 动作离散对照，本轮未通关 | 16 / 825 | 6.45 MiB |
+
+三份均为**完整训练检查点**，包含模型、Adam 和观测归一化。发布时只移除个人路径、端点等元数据；模型、优化器与归一化逐项相同。重新序列化会改变容器 SHA，各模型旁的 JSON 同时记录发布 `sha256` 与原始 `source_sha256`，不应把文件哈希变化误认成神经网络权重变化。
+
+650 的两次 A 录屏分别在第 23、31 局成功；550 历史的两局无伤均在 B，后来 A 单窗累计 409 局未成功。不同模型、机器和首次成功即停的流程不能混成稳定胜率，详见 [实验文档](docs/EXPERIMENTS.md)。
+
+## 从 650 继续训练
+
+先让指定窗口加载标准存档并站到雕像前。以下从完整 650 状态恢复 Adam 和归一化，使用 16 帧、三法术、原生辐辉与原奖励：
+
+```powershell
+.\train_spells.ps1 `
+  -Endpoints 127.0.0.1:9001 `
+  -InitCheckpoint models\traitor_lord_radiant.pth `
+  -RunDir python\runs\traitor_continue `
+  -FrameStack 16 -RewardProfile radiant_spells_dodge_v1 `
+  -Lr 0.0001 -EntCoef 0.005 -FreezeObsNorm `
+  -EvalEvery 25 -EvalEpisodes 10 -NoMonitor
+```
+
+新目录从第 651 次更新继续编号；这不等于完成了 650 次新训练。同目录已有 `ppo_checkpoint.pth` 时，入口恢复该目录最新完整状态及保存设置；另开实验使用新目录。`TotalUpdates` 是更新编号上限。项目不会自动恢复已停止的长训，只有执行命令才启动训练。
+
+该预设每环境收集 512 步，一个环境每次更新 512 条，四环境 2048 条。每次固定评估每环境 10 局，双窗共 20，四窗共 40。训练随机采样与评估贪心选择的分布不同，不要直接混比平均剩血。
+
+```powershell
+.\python\.venv\Scripts\python.exe python\watch_training.py --run-dir python\runs\traitor_continue
+```
+
+面板只读日志，不连接游戏。`run_config.json` 是实际配置，`training_metrics.jsonl` 是训练/更新/评估摘要，`eval_metrics.jsonl` 是固定评估逐局记录；最近完整模型为 `ppo_checkpoint.pth`，评估选出的模型为 `best_eval_checkpoint.pth`。
+
+多窗口和跨机器见 [MULTI_ENV_WINDOWS.md](MULTI_ENV_WINDOWS.md)、[MULTI_MACHINE.md](MULTI_MACHINE.md)。不要让两个控制器同时接管同一端口，也不要在采样中运行会新建并关闭游戏连接的检查。
+
+## 奖励与网络
+
+默认每帧 118 个状态特征，16 帧为 1888 维，隐层 `256 → 256`。组合策略的方向互斥，跳跃、冲刺、攻击与法术等可按规则组合；离散版另用一个 35 分类头，见 [MACRO_ACTIONS.md](MACRO_ACTIONS.md)。
+
+`radiant_spells_dodge_v1` 的原始奖励如下，进入 PPO 前统一乘 `0.05`：
+
+| 事件 | 奖励 |
+|---|---:|
+| Boss 实际掉血，包含法术 | 掉血量 ÷ 21 |
+| 击败 Boss | +100 |
+| 被跟踪招式动作结束，期间未受伤 | +0.1，无每局次数上限 |
+| 确认骨钉空挥 | −0.005 |
+| 时间成本 | −0.1 / 名义秒 |
+| 安全接近阶段离 Boss 过远 | 最多 −0.15 / 名义秒，危险阶段及邻近危险物有豁免 |
+| 损失生命 | −3 / 格 |
+| 死亡 | −20 |
+
+21 伤害一刀为 +1；法术按实际伤害计分，不因“请求施法”加分。辐辉死亡常见 9→0，损血和死亡合计约 −47。小额闪避项检查的是动作结束，不能证明飞出的冲击波已消失。默认未开启冲击波专项奖励、攻击距离潜势或 TTC 安全潜势。
+
+其余参数为 `γ=0.9955`、GAE `λ=0.95`、学习率 `1e-4`、熵系数 `0.005`。奖励与网络属于 A 上的 Python 逻辑；改变游戏命令、观测导出或原生处理时才需要更新各游戏的 Mod。都应保留旧模型和实际参数。
+
+## 失败探索与可复现性
+
+本轮尝试过低熵、冲击波专项奖励、闪避/空挥、潜势、新黑冲字段、4→16 帧、冲刺重发、低魂保护和 35 动作离散化，没有形成稳定提高无伤率的路线。潜势和新增输入曾同时变化，不能单独归因；650 的成功也不能证明帧数越多越好。
+
+离散分支从旧编号 550 到最终 845，新增 **295 次更新、529,920 条采样**；1,335 局已结束训练和 374 局已结束固定评估均无通关。最后四窗分支的最佳评估是 825，40 局平均 Boss 剩 525 HP。发布该模型用于保留对照，不替代成功的原版 650。
+
+另已确认 A 启动请求 60 FPS、B 曾请求 30 FPS，同一权重的历史有效决策间隔约 104/110 ms。启动目标不是实测 FPS，游戏菜单仍可修改上限。通用启动器现在默认 60；运行实例帧率/速度参数不符时拒绝复用，不自动重启。B 的旧 30 帧进程须关闭后再以 60 启动；改脚本不会修改已运行进程。游戏 FPS 与 AI 名义 10 Hz 不同，命令往返、推理与输入处理开销还会叠加。
+
+## 未来展望
+
+后续可探索原子状态发布、帧序号和输入执行确认，修正恢复后约 150 ms 首步仍可能使用旧观测的问题；还可研究容错到无伤的课程、人类示范和严格的跨机器复现。这些是展望，**尚未实现或证明有效**，没有混入发布模型。详见 [实验文档](docs/EXPERIMENTS.md)、[快速重置](FAST_RESET.md) 和 [潜势实验](COMBAT_POTENTIAL.md)。
 
 ## 目录与检查
 
-- `python/`：PPO、环境、评估、试打、监控及真人行为克隆。
-- `unity_mod/HollowRL/`：状态协议、输入注入、快速重置和真人录制 Mod。
-- `models/`：发布用推理权重。
-- `HK_save/`、`BepInEx/`：训练存档模板与 Mod 加载器。
-- `tools/`：保留的维护工具。
-- `python/runs/`：本地模型、日志、示范与试打结果，不提交 Git。
+| 目录 / 入口 | 内容 |
+|---|---|
+| `unity_mod/` | 观测、输入、原生难度与场景重置 Mod |
+| `python/main_multi.py`、`python/play.py` | 中央 PPO 与固定权重回放 |
+| `python/agent/`、`python/tests/` | 动作、奖励及核心回归检查 |
+| `models/` | 三份选定完整模型及来源 JSON |
+| `HK_save/`、`tools/` | 训练存档模板与离线检查/生成工具 |
+| `docs/` | 实验纪实、结果摘要与验收 |
+| `python/runs/`、`artifacts/` | 本机历史、日志和备份，不作为正式入口发布 |
 
-更多操作见 [快速重置](FAST_RESET.md)、[本机多窗口](MULTI_ENV_WINDOWS.md)、[跨电脑采样](MULTI_MACHINE.md)、[真人示范与行为克隆](HUMAN_DEMONSTRATIONS.md)。
-
-离线检查不会操作游戏：
+保留人类示范和行为克隆工具，见 [HUMAN_DEMONSTRATIONS.md](HUMAN_DEMONSTRATIONS.md)。一次性驱动和机器专用启动脚本已清理，必要的网络、动作、奖励、重置和迁移回归检查仍保留。
 
 ```powershell
 .\python\.venv\Scripts\python.exe -m unittest discover -s python/tests -t python -p 'test_*.py'
 ```
 
-实机试打另行启动 `record_radiant.ps1`。不要让训练器、真人录制器与试打入口同时控制同一端口。
-
-## 21 伤害与三法术训练
-
-新配置固定满级骨钉基础伤害 21、无战斗护符、已解锁黑波/黑吼/黑砸；保留零槽位虚空之心，不加入剑技。每台机器都要加载这一配置，不能混用旧 33 伤害存档采样。需要保留各机器自身存档时，先备份、关闭当地游戏，再生成独立副本：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\configure_training_loadout.ps1 -SavePath 'C:\path\user1.dat' -OutputPath 'C:\path\user1_21.dat'
-```
-
-工具只修正骨钉伤害和护符装备字段，不授予法术或移动能力；复制新副本到对应存档位置后重新加载。原存档和历史权重保留。
-
-用历史七按键 Actor 初始化独立的新法术模型：
-
-```powershell
-.\python\.venv\Scripts\python.exe python\migrate_spell_policy.py models\traitor_lord_radiant.pth python\runs\spell_initial\initial_policy.pth
-powershell -ExecutionPolicy Bypass -File .\train_spells.ps1
-```
-
-默认只连接本机 9001；多机可通过 `-Endpoints` 显式传入端点。该入口固定原生辐辉、10 Hz/1 倍速、150 秒局限、60 秒观测尺度、LR 0.0001、熵系数 0.005、固定旧观测归一化。迁移保留旧 Actor，重置 Critic/优化器，新法术头初始不施法 91%、每种法术各 3%；不是从零学习移动躲避。初始化文件拒绝覆盖；继续同一运行则从其完整 checkpoint 恢复。
-
-策略保留原七个按键，并增加一个分类选择：不施法/黑波/黑吼/黑砸。每个非零决策发一个正常快速施法请求，并设置相应上下方向；不补魂、不绕过冷却、不自动回血。当前法术模式限定不超过 10 Hz 且 1 倍速，让短按之间有释放间隔。
-
-新奖励 `radiant_spells_v1`：实际 Boss 掉血/21，击杀 +100，受伤每格 -3，死亡 -20，时间每秒 -0.10。不按施法、耗魂、近身或 FSM 阶段结束发正奖励。停用旧冲击波间距/穿波代理奖励及空挥惩罚。只在中立/恢复且附近没有残留脱离 Boss 的危险碰撞体时，距离超过 5 开始线性小额惩罚，到 12 封顶每秒 -0.15；危险物缺失/不可信时保守豁免。阈值为待验证假设，不保证比旧配置更强。
-
-每局记录三法术请求次数及观察到的净魂量消耗；请求可能因资源/动画被游戏拒绝，不能当作成功施法数。选择模型仍看固定权重无伤通关和剩余 Boss HP，不能只看新旧奖励曲线。
-
-```powershell
-.\python\.venv\Scripts\python.exe python\watch_training.py --run-dir python\runs\traitor_radiant_spells
-.\python\.venv\Scripts\python.exe python\play.py --checkpoint python\runs\traitor_radiant_spells\best_eval_checkpoint.pth
-```
-
-三法术实机验收从零魂开始，通过正常骨钉命中攒魂，分别确认三法术消耗 33 魂；黑波也观察到独立的 30 点伤害。这是功能验收，不代表模型已经学会何时施法。
-
-## 对照结束后的本机自动续训
-
-可选新奖励试验 `radiant_spells_dodge_v1` 在 `radiant_spells_v1` 基础上，增加通用动作无伤结束奖励和极微弱空挥惩罚：每次无伤完成动作 +0.1，没有每局次数上限，同一招只结算一次；游戏确认挥出但未命中的攻击每次 -0.005，冷却拒绝的按键请求不算空挥。它使用 Boss FSM 动作状态，合并跳起与俯冲为同一招；整招掉血或伤害计数增加、未知状态、死亡、超时及截断都不发躲避奖励。此近似不保证残留冲击波或飞镰已经消失，也不要求使用特定闪避方式。冲击波站位和真正穿波两项专项奖励均为 0。21 点实际 Boss 伤害仍为 +1、击杀 +100，其余奖励、学习率和网络保持一致。
-
-为自动续训入口增加 `--dodge-trial` 时，先完成原熵系数对照，再用其选出的同一完整权重分别做原奖励/新奖励各 20 次更新、各 40 局固定评估；候选通过筛选后另做独立复测，确认改善才用于后续长训，否则保留原奖励和来源权重。所有分支、权重备份、参数与评估分别保存，不在运行中的旧分支上热改奖励。
-
-后续奖励对照与自动续训默认截止时间为 150 秒（`--episode-time-limit 150`），观测时间特征继续按 60 秒缩放。历史 120 秒来源权重可以完整迁移，但其评估分数只作为历史记录保留；不会与新 150 秒评估直接比较最优分数。正在执行的有限熵对照按原 120 秒设置完成。
-
-用户明确选择保留某个奖励时，可用 `--continue-checkpoint <完整备份.pth> --reward-profile radiant_spells_dodge_v1` 直接另开目录续训；该模式不重复有限奖励筛选，也不自动撤回所指定的奖励。完整权重、优化器和观测归一化沿用来源文件，学习率与熵系数保持来源配置；新奖励重新积累自己的评估记录。
-
-`python/auto_continue_training.py --experiment-dir <对照目录>` 每 30 秒检查一次已创建的有限实验。只有实验完成并释放四窗后，才从完整备份权重另开训练目录：低熵候选必须通过筛选和独立复测，否则沿用已核实的源模型和原熵系数。奖励、角色数值、学习率保持不变；最新权重定期保存，已评估最优额外按版本归档。训练进程异常退出最多重试两次，游戏本身无法恢复时记录错误，不无限重启。
-
-这是本机规则脚本，不会定时唤醒聊天模型，也不会自动创造新奖励函数。两台电脑、网络和四个游戏窗口需要持续运行且不休眠。查看 `<对照目录>/auto_continue_status.json` 和 `continuation_decision.json` 可追溯当前状态与选择依据。若要接回人工控制，先在对照目录创建 `STOP_AUTO_CONTINUE` 文件禁用监督，再停止相应训练器；停止标记本身不会强杀训练。
+离线检查验证接口与计算一致性，不能代替实际战斗能力评估。具体检查数量、清理后的调谐固定局数胜率和辐辉进战结果见 [docs/VALIDATION.md](docs/VALIDATION.md)。

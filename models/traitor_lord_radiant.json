@@ -1,58 +1,51 @@
 {
   "checkpoint": "traitor_lord_radiant.pth",
-  "source_update": 1000,
-  "source_sha256": "ab46593c53f8f8af615ac6d2133c3df379cb2f07d22517ee40338b02a9d97221",
-  "sha256": "b4fd013da86959bd8c07833504b2052bfd4fc600de394e94dd33cc21d265eca4",
-  "evaluation": {
-    "episodes": 40,
-    "wins": 4,
-    "nohit_wins": 4,
-    "boss_level": 2,
-    "note": "One model-selection batch; not an independently established win rate."
+  "status": "recommended",
+  "description": "Original combination policy,16 frames; two successful A9001 recording sessions",
+  "source_sha256": "9d04b34b66a958d1f1d582710863de7a10e2bb2de6e0082afe7b9a0687c7f68d",
+  "sha256": "63bfb0ad1a4e91e5730e5da37c4d349ffc4c5a37e7280002514d000568040cca",
+  "bytes": 6703841,
+  "update": 650,
+  "frame_stack": 16,
+  "observation_size": 1888,
+  "model_hidden": 256,
+  "action_distribution": "exclusive_directions_spells_v1",
+  "execution_profile": "legacy_v1",
+  "control_hz": 10,
+  "reward_profile": "radiant_spells_dodge_v1",
+  "boss_level_used_for_training": 2,
+  "episode_time_limit": 150.0,
+  "observation_time_limit": 60.0,
+  "full_training_state": true,
+  "optimizer_entries": 22,
+  "loadout": {
+    "nail_damage": 21,
+    "combat_charms": [],
+    "void_heart_allowed": true,
+    "health": 9,
+    "blue_health": 0,
+    "spells": {
+      "fireballLevel": 2,
+      "quakeLevel": 2,
+      "screamLevel": 2
+    }
   },
-  "inference_config": {
-    "boss_level": 2,
-    "episode_time_limit": 120.0,
-    "observation_time_limit": 60.0,
-    "game_speed": 1.0,
-    "reward_profile": "radiant_spacing_v1",
-    "action_selection": "greedy"
-  },
-  "contents": "Exact source policy and observation normalizer; optimizer and local paths omitted.",
-  "release_validation": {
-    "date": "2026-10-31",
-    "python_regression_tests": 130,
-    "input_rebinding_checks": 16,
-    "mod_build": "passed",
-    "installed_mod_sha256": "A4B7798346E5F5B1AF9530BAEB1F7E9AE98281D6D2FE717FE282E0996A5EAFAE",
-    "native_radiant_fights": [
+  "evidence": {
+    "sessions": [
       {
-        "won": false,
-        "masks_lost": 9,
-        "minimum_boss_hp": 409,
-        "control_steps": 512
+        "attempts": 23,
+        "nohit_wins": 1
       },
       {
-        "won": false,
-        "masks_lost": 9,
-        "minimum_boss_hp": 442,
-        "control_steps": 428
-      },
-      {
-        "won": true,
-        "masks_lost": 0,
-        "minimum_boss_hp": 0,
-        "control_steps": 816
+        "attempts": 31,
+        "nohit_wins": 1
       }
     ],
-    "checkpoint_unchanged": true,
-    "normalizer_unchanged": true,
-    "purpose": "Functional smoke test, stopped after first flawless win; not a win-rate estimate."
+    "historical_eval_nohit": "2/40; both wins on host A"
   },
-  "source_loadout": {
-    "nail_damage": 33,
-    "combat_charms": [],
-    "void_heart": true,
-    "warning": "Historical training used a modified 33-base-damage save. Prior victories are not evidence of standard 21-damage performance."
-  }
+  "limitations": [
+    "Historical success is not a stable success-rate estimate.",
+    "Frame-cap and command timing can differ between hosts.",
+    "Export changes container metadata/hash; model,Adam and observation normalization are exactly preserved."
+  ]
 }

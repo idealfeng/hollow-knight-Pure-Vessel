@@ -10,8 +10,8 @@ __pycache__/
 .venv/
 venv/
 
-# Full training checkpoints and datasets stay local; publish only the chosen
-# portable inference model below.
+# Training histories and datasets stay local. Only the three selected
+# portable checkpoints below are published (including full optimizer state).
 *.npz
 *.pth
 runs_archive/
@@ -23,3 +23,6 @@ mod_backups/
 tools/combat_state_backups/
 artifacts/
 !models/traitor_lord_radiant.pth
+
+!models/traitor_lord_radiant_4f_550.pth
+!models/traitor_lord_discrete_16f_825.pth

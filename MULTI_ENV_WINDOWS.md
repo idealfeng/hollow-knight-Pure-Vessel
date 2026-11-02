@@ -1,43 +1,47 @@
-﻿# Windows 本机多窗口训练
+# Windows 本机多窗口训练
 
-一个中央 PPO 为所有游戏收集数据并更新同一模型，各游戏由独立 worker 控制。启动多个训练器不能代替多环境采样，并会争用游戏。
+中央 PPO 为所有实例收集数据并更新同一模型，各游戏由独立 worker 控制。多个训练器争抢端口不等于正确的多环境采样。
 
-## 游戏目录
+## 启动游戏
 
-准备两份已安装 BepInEx 和当前 Mod 的游戏目录，各自包含 `hollow_knight.exe` 与 `BepInEx/plugins/HollowRL/HollowRL.dll`。游戏目录隔离日志和配置，同一 Windows 账户的存档目录仍共享。先备份存档，使用训练模板并关闭 Steam Cloud。启动器提供 `steam_appid.txt`，检查游戏进程和监听端口。
+准备两份安装同版 BepInEx 和 Mod 的游戏目录，各含 `hollow_knight.exe` 和 `BepInEx/plugins/HollowRL/HollowRL.dll`。同一 Windows 账户仍共享存档目录；先备份，安装标准模板并重新加载。
 
 ```powershell
 .\launch_multi_games.ps1 `
   -GameDirs 'D:\HollowRL-instances\env1','D:\HollowRL-instances\env2' `
-  -Ports 9001,9002
+  -Ports 9001,9002 -Fps 60 -GameSpeed 1
 ```
 
-默认 640×360、30 FPS、1 倍速，后台继续运行。可用 `-Fps 60 -Width 1280 -Height 720` 调整显示。各窗口加载 1 号存档，站到叛徒领主雕像前；训练器自动进战并等待可战斗状态。
+通用启动器默认 640×360、60 FPS、1 倍速，后台继续运行。可用 `-Width 1280 -Height 720` 调整显示。端口已有进程时检查目录、Boss 和启动帧率/速度，参数不同拒绝复用，不自动关闭或重启。改脚本不修改已运行进程。
 
-## 中央训练
+各窗口加载骨钉 21、无战斗护符、三法术存档，站到雕像前，不必手动选难度。
+
+## 从完整 650 续训
 
 ```powershell
-.\run_multi_windows.ps1 -Ports 9001,9002 `
-  -RunDir python\runs\traitor_local -Lr 1e-4 -EntCoef 0.005 `
-  -EvalEvery 25 -EvalEpisodes 10
+.\train_spells.ps1 `
+  -Endpoints 127.0.0.1:9001,127.0.0.1:9002 `
+  -InitCheckpoint models\traitor_lord_radiant.pth `
+  -RunDir python\runs\traitor_local `
+  -FrameStack 16 -RewardProfile radiant_spells_dodge_v1 `
+  -Lr 0.0001 -EntCoef 0.005 -FreezeObsNorm `
+  -EvalEvery 25 -EvalEpisodes 10 -NoMonitor
 ```
 
-此命令使用默认难度和奖励；显式辐辉使用 [README](README.md) 的 `main_multi.py` 命令。`-NoMonitor` 可禁用嵌入式 GUI，`-StepsPerEnv` 调整每环境采样长度。默认双环境各 1024 步、四环境各 512 步，合计每次更新 2048 步。
+该预设为原生辐辉、1 倍速、名义 10 Hz、每环境 512 步；双窗每次 1024 条，四窗每次 2048 条。固定评估每窗 10 局。完整模型恢复 Adam 和归一化，同目录恢复最新状态，另开实验使用新目录。
 
-同一运行目录自动恢复最新完整 checkpoint；新实验使用新目录。推理专用权重不包含完整续训的优化器状态。
+通用 `run_multi_windows.ps1` 支持更多参数，但其新运行帧堆叠/学习率默认值不等于三法术 650 预设；复用 650 优先使用上述命令并记录实际设置。
 
 ## 日志与性能
-
-- `training_metrics.jsonl`：完整训练回合、更新和评估汇总。
-- `eval_metrics.jsonl`：固定贪心策略逐局评估。
-- `ppo_checkpoint.pth`：最近的完整训练状态。
-- `best_eval_checkpoint.pth`、`best_eval.json`：评估选出的模型及成绩。
-- `run_config.json`：实际参数。
 
 ```powershell
 .\python\.venv\Scripts\python.exe python\watch_training.py --run-dir python\runs\traitor_local
 ```
 
-先观察总 step/s、内存、各窗口 FPS、重置耗时与重试数，再增加实例。某窗口重置时其他 worker 可继续采样，但所有游戏仍共享硬件资源。重置重试持续增加时先处理故障。
+面板只读日志。`training_metrics.jsonl` 含完整回合、更新与评估摘要，`eval_metrics.jsonl` 为固定评估逐局结果，`run_config.json` 为实际配置。`ppo_checkpoint.pth` 是最新完整训练状态，`best_eval_checkpoint.pth` 和 `best_eval.json` 为评估选出的模型与成绩。
 
-rollout 期间权重固定，GAE 沿各环境时间轴计算后合并，归一化、优化器与 checkpoint 由中央维护。评估打断的未完成训练回合记为 `episode_interrupted`，不混入完整回合平均值。
+10 Hz 与游戏 FPS 独立：控制器等待约 100 ms，另外叠加命令、推理和调度开销，并非严格每六个游戏帧决策一次。优先保持各实例实际帧率稳定、训练与评估条件一致，再考虑增加窗口。
+
+某窗口重置时其他 worker 可继续采样，但同机共享硬件资源。采集期间模型固定，GAE 沿各环境时间轴计算后合并；评估打断的未完成训练回合单列 `episode_interrupted`，不混入完整回合平均值。
+
+原生难度和重置见 [FAST_RESET.md](FAST_RESET.md)，跨机器见 [MULTI_MACHINE.md](MULTI_MACHINE.md)。不要让两个控制器接管相同端口；运行中从日志读状态，独立端点检查需等控制器退出。

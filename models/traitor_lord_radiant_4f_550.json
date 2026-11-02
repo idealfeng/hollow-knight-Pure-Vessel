@@ -1,0 +1,45 @@
+{
+  "checkpoint": "traitor_lord_radiant_4f_550.pth",
+  "status": "historical_comparison",
+  "description": "Original combination policy,4 frames; historical no-hit wins on host B, not a reliable A recording model",
+  "source_sha256": "7ac14df0a95ef4fd191ade3e51ee19f94f7383587fc3a9107e826f86d4dd7104",
+  "sha256": "a2369bc70fe0e882183e6c7ab33f9104489cf961fff75364cfab6bea23ddb5c8",
+  "bytes": 2322611,
+  "update": 550,
+  "frame_stack": 4,
+  "observation_size": 472,
+  "model_hidden": 256,
+  "action_distribution": "exclusive_directions_spells_v1",
+  "execution_profile": "legacy_v1",
+  "control_hz": 10,
+  "reward_profile": "radiant_spells_dodge_v1",
+  "boss_level_used_for_training": 2,
+  "episode_time_limit": 150.0,
+  "observation_time_limit": 60.0,
+  "full_training_state": true,
+  "optimizer_entries": 22,
+  "loadout": {
+    "nail_damage": 21,
+    "combat_charms": [],
+    "void_heart_allowed": true,
+    "health": 9,
+    "blue_health": 0,
+    "spells": {
+      "fireballLevel": 2,
+      "quakeLevel": 2,
+      "screamLevel": 2
+    }
+  },
+  "evidence": {
+    "historical_eval_nohit": "2/40; both wins on host B",
+    "A9001_recording": {
+      "attempts": 409,
+      "nohit_wins": 0
+    }
+  },
+  "limitations": [
+    "Historical success is not a stable success-rate estimate.",
+    "Frame-cap and command timing can differ between hosts.",
+    "Export changes container metadata/hash; model,Adam and observation normalization are exactly preserved."
+  ]
+}

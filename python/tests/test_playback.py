@@ -8,14 +8,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import play
+from tests.test_player import write_checkpoint
 
 
 class UnlimitedPlaybackTests(unittest.TestCase):
     def run_playback(self, outcomes, *, check_only=False):
-        original, digest = play.load_checkpoint(play.DEFAULT_CHECKPOINT)
-        saved = dict(original, training_config={"episode_time_limit": 150.0,
-                                                "observation_time_limit": 60.0,
-                                                "reward_profile": "radiant_spells_dodge_v1"})
         completed = []
         pool = MagicMock()
 
@@ -29,13 +26,15 @@ class UnlimitedPlaybackTests(unittest.TestCase):
             return [result]
 
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            checkpoint = Path(temporary) / "policy.pth"
+            write_checkpoint(checkpoint, episode_time_limit=150.0)
             stack.enter_context(patch.object(play, "ROOT", Path(temporary)))
-            stack.enter_context(patch.object(play, "load_checkpoint", return_value=(saved, digest)))
             stage = stack.enter_context(patch.object(play, "stage_fresh_fight"))
+            freeze = stack.enter_context(patch.object(play, "freeze_game", return_value={"paused": True}))
             prepare = stack.enter_context(patch.object(play, "prepare_fight"))
             factory = stack.enter_context(patch.object(play, "ExternalEnvPool", return_value=pool))
             evaluate_mock = stack.enter_context(patch.object(play, "evaluate_pool", side_effect=evaluate))
-            stack.enter_context(patch("sys.argv", ["play.py", "--episodes", "0"]
+            stack.enter_context(patch("sys.argv", ["play.py", "--checkpoint", str(checkpoint), "--episodes", "0"]
                                       + (["--check-only"] if check_only else [])))
             stack.enter_context(patch("sys.stdout", new_callable=io.StringIO))
             play.main()
@@ -44,11 +43,13 @@ class UnlimitedPlaybackTests(unittest.TestCase):
                 prepare.assert_not_called()
                 factory.assert_not_called()
                 evaluate_mock.assert_not_called()
+                freeze.assert_not_called()
                 return
             self.assertEqual(factory.call_args.args[3], 150.0)
             self.assertEqual(factory.call_args.kwargs["observation_time_limit"], 60.0)
             self.assertEqual(factory.call_args.args[5], "radiant_spells_dodge_v1")
             pool.close.assert_called_once()
+            freeze.assert_called_once_with(("127.0.0.1", 9001))
             summary = json.loads(next(Path(temporary).rglob("summary.json")).read_text())
             return completed, summary
 
@@ -56,6 +57,7 @@ class UnlimitedPlaybackTests(unittest.TestCase):
         completed, summary = self.run_playback([(False, 9), (True, 1), (False, 9), (True, 0)])
         self.assertEqual(len(completed), 4)
         self.assertEqual(summary["flawless_wins"], 1)
+        self.assertEqual(summary["wins"], 2)
         self.assertEqual(summary["episodes_limit"], 0)
         self.assertTrue(summary["retry_until_flawless"])
         self.assertEqual(summary["episode_time_limit"], 150.0)

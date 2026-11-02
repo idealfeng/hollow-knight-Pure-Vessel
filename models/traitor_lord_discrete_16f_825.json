@@ -1,0 +1,42 @@
+{
+  "checkpoint": "traitor_lord_discrete_16f_825.pth",
+  "status": "experimental",
+  "description": "35-action discrete policy; best complete four-environment evaluation in its final run, no wins",
+  "source_sha256": "afad5c0fa2b5bed07d50ad9b8d94316428748662e7a00e20c289fc4bcbb7b95e",
+  "sha256": "1f8e9cfeebafc6b46a3cba70a6f7500ac913d2b483c1b38e68dd85740bade681",
+  "bytes": 6765895,
+  "update": 825,
+  "frame_stack": 16,
+  "observation_size": 1888,
+  "model_hidden": 256,
+  "action_distribution": "discrete_macros_v1",
+  "execution_profile": "legacy_v1",
+  "control_hz": 10,
+  "reward_profile": "radiant_spells_dodge_v1",
+  "boss_level_used_for_training": 2,
+  "episode_time_limit": 150.0,
+  "observation_time_limit": 60.0,
+  "full_training_state": true,
+  "optimizer_entries": 8,
+  "loadout": {
+    "nail_damage": 21,
+    "combat_charms": [],
+    "void_heart_allowed": true,
+    "health": 9,
+    "blue_health": 0,
+    "spells": {
+      "fireballLevel": 2,
+      "quakeLevel": 2,
+      "screamLevel": 2
+    }
+  },
+  "evidence": {
+    "historical_eval_nohit": "0/40",
+    "mean_min_boss_hp": 525.0
+  },
+  "limitations": [
+    "Historical success is not a stable success-rate estimate.",
+    "Frame-cap and command timing can differ between hosts.",
+    "Export changes container metadata/hash; model,Adam and observation normalization are exactly preserved."
+  ]
+}
